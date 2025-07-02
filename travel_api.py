@@ -5,6 +5,7 @@ import json
 import httpx
 from datetime import datetime
 from dotenv import load_dotenv
+import time
 
 # Load environment variables
 load_dotenv()
@@ -14,14 +15,15 @@ APIFY_TOKEN = os.getenv("APIFY_TOKEN")
 # FLIGHT SEARCH - jupri/skyscanner-flight Actor
 # =============================================================================
 
-async def search_flights_apify(origin: str, destination: str, date: str):
+async def search_flights_apify(origin: str, destination: str, date: str, max_retries: int = 3):
     """
-    Search flights using jupri/skyscanner-flight Apify Actor
+    Search flights using jupri/skyscanner-flight Apify Actor with retry logic
     
     Args:
         origin (str): IATA airport code (e.g., 'VIE')
         destination (str): IATA airport code (e.g., 'FCO') 
         date (str): Departure date in YYYY-MM-DD format
+        max_retries (int): Maximum number of retry attempts
         
     Returns:
         list: List of flight dictionaries with airline, price, time, duration
@@ -30,8 +32,8 @@ async def search_flights_apify(origin: str, destination: str, date: str):
     
     # Check API token
     if not APIFY_TOKEN:
-        print("❌ No APIFY_TOKEN found, using mock data")
-        return await _mock_flight_search(origin, destination, date)
+        print("❌ No APIFY_TOKEN found")
+        return []
     
     # Prepare actor input (jupri/skyscanner-flight format)
     actor_input = {
@@ -42,48 +44,67 @@ async def search_flights_apify(origin: str, destination: str, date: str):
         "currency": "EUR"
     }
     
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            print(f"📡 Starting jupri/skyscanner-flight actor...")
+    for attempt in range(max_retries):
+        try:
+            print(f"📡 Starting jupri/skyscanner-flight actor (attempt {attempt + 1}/{max_retries})...")
             print(f"📋 Input: {actor_input}")
             
-            # Call Apify API
-            response = await client.post(
-                "https://api.apify.com/v2/acts/jupri~skyscanner-flight/run-sync-get-dataset-items",
-                headers={"Authorization": f"Bearer {APIFY_TOKEN}"},
-                json=actor_input
-            )
+            # Exponential backoff: wait 2^attempt seconds before retry
+            if attempt > 0:
+                wait_time = 2 ** attempt
+                print(f"⏳ Waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
             
-            print(f"🔄 HTTP Status: {response.status_code}")
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                # Call Apify API
+                response = await client.post(
+                    "https://api.apify.com/v2/acts/jupri~skyscanner-flight/run-sync-get-dataset-items",
+                    headers={"Authorization": f"Bearer {APIFY_TOKEN}"},
+                    json=actor_input
+                )
+                
+                print(f"🔄 HTTP Status: {response.status_code}")
+                
+                # Check response status
+                if response.status_code not in [200, 201]:
+                    print(f"❌ API Error {response.status_code}: {response.text[:500]}")
+                    if attempt == max_retries - 1:  # Last attempt
+                        raise Exception(f"API returned status {response.status_code} after {max_retries} attempts")
+                    continue  # Retry
+                
+                # Parse response
+                data = response.json()
+                print(f"✅ API Response: {len(data)} items received")
+                
+                # Debug first item structure
+                if data and len(data) > 0:
+                    first_item = data[0]
+                    print(f"🔍 Response structure: {list(first_item.keys())[:8]}...")
+                
+                # Parse flights from response
+                flights = _parse_skyscanner_flights(data)
+                
+                if not flights:
+                    print("⚠️ No valid flights found in API response")
+                    if attempt == max_retries - 1:  # Last attempt
+                        return []
+                    continue  # Retry
+                
+                print(f"✅ Successfully parsed {len(flights)} flights")
+                return flights
+                
+        except asyncio.TimeoutError:
+            print(f"⏰ Request timeout on attempt {attempt + 1}")
+            if attempt == max_retries - 1:
+                raise Exception(f"Request timed out after {max_retries} attempts")
             
-            # Check response status
-            if response.status_code not in [200, 201]:
-                print(f"❌ API Error {response.status_code}: {response.text[:500]}")
-                return await _mock_flight_search(origin, destination, date)
-            
-            # Parse response
-            data = response.json()
-            print(f"✅ API Response: {len(data)} items received")
-            
-            # Debug first item structure
-            if data and len(data) > 0:
-                first_item = data[0]
-                print(f"🔍 Response structure: {list(first_item.keys())[:8]}...")
-            
-            # Parse flights from response
-            flights = _parse_skyscanner_flights(data)
-            
-            if not flights:
-                print("⚠️ No valid flights found, falling back to mock")
-                return await _mock_flight_search(origin, destination, date)
-            
-            print(f"✅ Successfully parsed {len(flights)} flights")
-            return flights
-            
-    except Exception as e:
-        print(f"❌ Flight API Error: {e}")
-        print(f"❌ Error Type: {type(e).__name__}")
-        return await _mock_flight_search(origin, destination, date)
+        except Exception as e:
+            print(f"❌ Flight API Error (attempt {attempt + 1}): {e}")
+            print(f"❌ Error Type: {type(e).__name__}")
+            if attempt == max_retries - 1:  # Last attempt
+                raise e
+    
+    return []  # Should not reach here
 
 
 def _parse_skyscanner_flights(data):
@@ -168,13 +189,26 @@ def _parse_single_flight(pricing_option, leg, carriers):
         stop_count = leg.get('stop_count', 0)
         stops_text = f" ({stop_count} stops)" if stop_count > 0 else " (nonstop)"
         
+        # Extract booking URL (from pricing_option items)
+        booking_url = ""
+        items = pricing_option.get('items', [])
+        if items and len(items) > 0:
+            raw_url = items[0].get('url', '')
+            # Fix relative URLs to point to Skyscanner
+            if raw_url.startswith('/transport_deeplink/'):
+                booking_url = 'https://www.skyscanner.com' + raw_url
+            else:
+                booking_url = raw_url
+        
         flight = {
             'airline': airline,
             'price': int(price) if price else 0,
             'time': formatted_time,
             'duration': formatted_duration + stops_text,
             'stops': stop_count,
-            'source': 'Skyscanner'
+            'source': 'Skyscanner',
+            'url': booking_url[:200] if booking_url else '',  # Limit URL length
+            'date': departure_time.split('T')[0] if 'T' in str(departure_time) else ''
         }
         
         print(f"  ✈️ {airline}: {price}€ at {formatted_time} ({formatted_duration})")
@@ -225,30 +259,21 @@ def _format_duration(minutes):
         return 'Unknown'
 
 
-async def _mock_flight_search(origin: str, destination: str, date: str):
-    """Mock flight data for testing/fallback"""
-    print(f"🔄 MOCK: Flights {origin} → {destination}")
-    await asyncio.sleep(0.5)  # Simulate API delay
-    
-    return [
-        {"airline": "Lufthansa", "price": 299, "time": "08:30", "duration": "3h 15m (nonstop)", "stops": 0, "source": "Mock"},
-        {"airline": "Austrian Airlines", "price": 259, "time": "14:20", "duration": "3h 30m (nonstop)", "stops": 0, "source": "Mock"},
-        {"airline": "Eurowings", "price": 199, "time": "06:45", "duration": "3h 20m (nonstop)", "stops": 0, "source": "Mock"}
-    ]
 
 
 # =============================================================================
 # HOTEL SEARCH - voyager/booking-scraper Actor  
 # =============================================================================
 
-async def search_hotels_apify(city: str, checkin: str, checkout: str):
+async def search_hotels_apify(city: str, checkin: str, checkout: str, max_retries: int = 3):
     """
-    Search hotels using voyager/booking-scraper Apify Actor
+    Search hotels using voyager/booking-scraper Apify Actor with retry logic
     
     Args:
         city (str): City name (e.g., 'Barcelona')
         checkin (str): Check-in date in YYYY-MM-DD format
         checkout (str): Check-out date in YYYY-MM-DD format
+        max_retries (int): Maximum number of retry attempts
         
     Returns:
         list: List of hotel dictionaries with name, price, rating, location
@@ -257,8 +282,8 @@ async def search_hotels_apify(city: str, checkin: str, checkout: str):
     
     # Check API token
     if not APIFY_TOKEN:
-        print("❌ No APIFY_TOKEN found, using mock data")
-        return await _mock_hotel_search(city, checkin, checkout)
+        print("❌ No APIFY_TOKEN found")
+        return []
     
     # Prepare actor input (voyager/booking-scraper format)
     actor_input = {
@@ -276,48 +301,67 @@ async def search_hotels_apify(city: str, checkin: str, checkout: str):
         "children": 0
     }
     
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            print(f"📡 Starting voyager/booking-scraper actor...")
+    for attempt in range(max_retries):
+        try:
+            print(f"📡 Starting voyager/booking-scraper actor (attempt {attempt + 1}/{max_retries})...")
             print(f"📋 Input: {actor_input}")
             
-            # Call Apify API
-            response = await client.post(
-                "https://api.apify.com/v2/acts/voyager~booking-scraper/run-sync-get-dataset-items",
-                headers={"Authorization": f"Bearer {APIFY_TOKEN}"},
-                json=actor_input
-            )
+            # Exponential backoff: wait 2^attempt seconds before retry
+            if attempt > 0:
+                wait_time = 2 ** attempt
+                print(f"⏳ Waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
             
-            print(f"🔄 HTTP Status: {response.status_code}")
-            
-            # Check response status
-            if response.status_code not in [200, 201]:
-                print(f"❌ API Error {response.status_code}: {response.text[:500]}")
-                return await _mock_hotel_search(city, checkin, checkout)
-            
-            # Parse response
-            data = response.json()
-            print(f"✅ API Response: {len(data)} hotels received")
-            
-            # Debug first item structure
-            if data and len(data) > 0:
-                first_item = data[0]
-                print(f"🔍 Response structure: {list(first_item.keys())[:8]}...")
-            
-            # Parse hotels from response
-            hotels = _parse_booking_hotels(data)
-            
-            if not hotels:
-                print("⚠️ No valid hotels found, falling back to mock")
-                return await _mock_hotel_search(city, checkin, checkout)
-            
-            print(f"✅ Successfully parsed {len(hotels)} hotels")
-            return hotels
-            
-    except Exception as e:
-        print(f"❌ Hotel API Error: {e}")
-        print(f"❌ Error Type: {type(e).__name__}")
-        return await _mock_hotel_search(city, checkin, checkout)
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                # Call Apify API
+                response = await client.post(
+                    "https://api.apify.com/v2/acts/voyager~booking-scraper/run-sync-get-dataset-items",
+                    headers={"Authorization": f"Bearer {APIFY_TOKEN}"},
+                    json=actor_input
+                )
+                
+                print(f"🔄 HTTP Status: {response.status_code}")
+                
+                # Check response status
+                if response.status_code not in [200, 201]:
+                    print(f"❌ API Error {response.status_code}: {response.text[:500]}")
+                    if attempt == max_retries - 1:  # Last attempt
+                        raise Exception(f"API returned status {response.status_code} after {max_retries} attempts")
+                    continue  # Retry
+                
+                # Parse response
+                data = response.json()
+                print(f"✅ API Response: {len(data)} hotels received")
+                
+                # Debug first item structure
+                if data and len(data) > 0:
+                    first_item = data[0]
+                    print(f"🔍 Response structure: {list(first_item.keys())[:8]}...")
+                
+                # Parse hotels from response
+                hotels = _parse_booking_hotels(data)
+                
+                if not hotels:
+                    print("⚠️ No valid hotels found in API response")
+                    if attempt == max_retries - 1:  # Last attempt
+                        return []
+                    continue  # Retry
+                
+                print(f"✅ Successfully parsed {len(hotels)} hotels")
+                return hotels
+                
+        except asyncio.TimeoutError:
+            print(f"⏰ Request timeout on attempt {attempt + 1}")
+            if attempt == max_retries - 1:
+                raise Exception(f"Request timed out after {max_retries} attempts")
+                
+        except Exception as e:
+            print(f"❌ Hotel API Error (attempt {attempt + 1}): {e}")
+            print(f"❌ Error Type: {type(e).__name__}")
+            if attempt == max_retries - 1:  # Last attempt
+                raise e
+    
+    return []  # Should not reach here
 
 
 def _parse_booking_hotels(data):
@@ -327,15 +371,38 @@ def _parse_booking_hotels(data):
     try:
         for item in data[:10]:  # Limit to 10 hotels
             try:
-                # Extract basic info
+                # Extract basic info with safe type conversion
                 name = item.get('name', 'Unknown Hotel')
-                price = item.get('price', 0)
-                rating = item.get('rating', 0)
-                stars = item.get('stars', 0)
+                price = item.get('price')
+                rating = item.get('rating')
+                stars = item.get('stars')
                 
-                # Extract location
-                address = item.get('address', {})
-                location = address.get('full', address.get('city', 'Unknown'))
+                # Safe numeric conversion
+                try:
+                    price = float(price) if price is not None else 0
+                except (ValueError, TypeError):
+                    price = 0
+                
+                try:
+                    rating = float(rating) if rating is not None else 0
+                except (ValueError, TypeError):
+                    rating = 0
+                
+                try:
+                    stars = float(stars) if stars is not None else 0
+                except (ValueError, TypeError):
+                    stars = 0
+                
+                # Extract location safely
+                location = "City Center"  # Default
+                if 'address' in item and item['address']:
+                    address = item['address']
+                    if isinstance(address, dict):
+                        location = address.get('full', address.get('city', 'City Center'))
+                    elif isinstance(address, str):
+                        location = address
+                elif 'location' in item:
+                    location = item.get('location', 'City Center')
                 
                 # Extract property type
                 property_type = item.get('type', 'hotel')
@@ -346,28 +413,34 @@ def _parse_booking_hotels(data):
                 # Calculate final rating
                 final_rating = rating if rating > 0 else (stars if stars > 0 else 4.0)
                 
-                # Check for room prices if main price is 0
+                # Check for room prices if main price is 0 or None
                 if price <= 0 and 'rooms' in item and item['rooms']:
                     room_prices = []
                     for room in item['rooms']:
-                        if 'options' in room:
+                        if 'options' in room and room['options']:
                             for option in room['options']:
-                                room_price = option.get('price', 0)
-                                if room_price > 0:
-                                    room_prices.append(room_price)
+                                try:
+                                    room_price = float(option.get('price', 0))
+                                    if room_price > 0:
+                                        room_prices.append(room_price)
+                                except (ValueError, TypeError):
+                                    continue
                     if room_prices:
                         price = min(room_prices)  # Cheapest room price
                 
-                # Create hotel object
+                # Create hotel object with safe values
                 hotel = {
-                    'name': str(name)[:60],
+                    'name': str(name)[:60] if name else 'Unknown Hotel',
                     'price': int(price) if price > 0 else 0,
                     'rating': round(float(final_rating), 1),
                     'location': str(location)[:50] if location else "City Center",
                     'stars': "⭐" * min(int(final_rating), 5),
-                    'url': url[:100] if url else '',
-                    'type': property_type,
-                    'source': 'Booking.com'
+                    'url': str(url)[:200] if url else '',
+                    'type': str(property_type) if property_type else 'hotel',
+                    'source': 'Booking.com',
+                    'checkin': item.get('checkInDate', ''),
+                    'checkout': item.get('checkOutDate', ''),
+                    'search_city': item.get('search', 'Unknown')  # Use search term from input
                 }
                 
                 # Only add hotels with valid data
@@ -383,51 +456,11 @@ def _parse_booking_hotels(data):
         print(f"❌ Hotel Parser Error: {e}")
     
     # Sort by price-to-rating ratio (best value first)
-    hotels.sort(key=lambda h: h['price'] / max(h['rating'], 1))
+    if hotels:
+        hotels.sort(key=lambda h: h['price'] / max(h['rating'], 1))
     return hotels
 
 
-async def _mock_hotel_search(city: str, checkin: str, checkout: str):
-    """Mock hotel data for testing/fallback"""
-    print(f"🔄 MOCK: Hotels in {city}")
-    await asyncio.sleep(0.3)  # Simulate API delay
-    
-    # City-specific mock data
-    city_hotels = {
-        'Barcelona': [
-            {"name": "Hotel Arts Barcelona", "price": 450, "rating": 4.8, "location": "Port Olympic"},
-            {"name": "Casa Milà Suites", "price": 280, "rating": 4.5, "location": "Eixample"},
-            {"name": "Generator Barcelona", "price": 89, "rating": 4.1, "location": "Gràcia"}
-        ],
-        'Rome': [
-            {"name": "Hotel de Russie", "price": 520, "rating": 4.9, "location": "Via del Corso"},
-            {"name": "The First Roma Dolce", "price": 180, "rating": 4.3, "location": "Termini"},
-            {"name": "Rome Times Hotel", "price": 95, "rating": 3.9, "location": "Esquilino"}
-        ],
-        'Paris': [
-            {"name": "Le Meurice", "price": 680, "rating": 4.9, "location": "1st Arrondissement"},
-            {"name": "Hotel Malte Opera", "price": 220, "rating": 4.4, "location": "2nd Arrondissement"},
-            {"name": "MIJE Hostel", "price": 65, "rating": 3.8, "location": "Marais"}
-        ]
-    }
-    
-    # Default hotels for unknown cities
-    default_hotels = [
-        {"name": "City Center Hotel", "price": 180, "rating": 4.2, "location": "City Center"},
-        {"name": "Budget Inn", "price": 89, "rating": 3.8, "location": "Outskirts"},
-        {"name": "Luxury Resort", "price": 350, "rating": 4.7, "location": "Premium District"}
-    ]
-    
-    hotels = city_hotels.get(city, default_hotels)
-    
-    # Add stars and source
-    for hotel in hotels:
-        hotel["stars"] = "⭐" * int(hotel["rating"])
-        hotel["source"] = "Mock"
-        hotel["type"] = "hotel"
-        hotel["url"] = ""
-    
-    return hotels
 
 
 # =============================================================================

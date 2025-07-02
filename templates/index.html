@@ -56,6 +56,7 @@
         
         .form-group {
             margin-bottom: 20px;
+            position: relative;
         }
         
         label {
@@ -72,12 +73,58 @@
             border-radius: 10px;
             font-size: 16px;
             box-sizing: border-box;
+            transition: all 0.3s;
         }
         
         input:focus, select:focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .city-input {
+            position: relative;
+        }
+        
+        .city-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 2px solid #e9ecef;
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+        
+        .suggestion-item {
+            padding: 12px 15px;
+            cursor: pointer;
+            border-bottom: 1px solid #f1f2f6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .suggestion-item:hover {
+            background: #f8f9fa;
+        }
+        
+        .suggestion-city {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .suggestion-iata {
+            font-size: 0.85rem;
+            color: #666;
+            background: #e9ecef;
+            padding: 2px 8px;
+            border-radius: 4px;
         }
         
         .search-btn {
@@ -96,6 +143,62 @@
         .search-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+        }
+        
+        .search-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .city-status {
+            margin-top: 5px;
+            font-size: 0.85rem;
+            color: #28a745;
+        }
+        
+        .city-status.error {
+            color: #dc3545;
+        }
+        
+        .city-status.warning {
+            color: #ffc107;
+        }
+        
+        .popular-destinations {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .popular-destinations h4 {
+            margin-top: 0;
+            color: #555;
+        }
+        
+        .dest-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .dest-item {
+            padding: 8px 12px;
+            background: white;
+            border-radius: 6px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: 1px solid #e9ecef;
+            font-size: 0.9rem;
+        }
+        
+        .dest-item:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-1px);
         }
         
         .features {
@@ -142,32 +245,34 @@
 <body>
     <div class="hero">
         <h1>🌍 Travel Comparison</h1>
-        <p>Finde die besten Flug + Hotel Kombinationen</p>
+        <p>Einfach Städtenamen eingeben - wir finden die besten Flug + Hotel Kombinationen</p>
     </div>
 
     <div class="search-card">
-        <form action="/smart-search" method="post">
+        <form action="/smart-search" method="post" id="search-form">
             <div class="form-section">
-                <h3>🎯 Smart Travel Search</h3>
+                <h3>🧠 Smart Travel Search</h3>
                 
                 <div class="form-row">
                     <div class="form-group">
                         <label for="origin">🛫 Von</label>
-                        <select name="origin" required>
-                            <option value="VIE">Wien (VIE)</option>
-                            <option value="MUC">München (MUC)</option>
-                            <option value="ZUR">Zürich (ZUR)</option>
-                        </select>
+                        <div class="city-input">
+                            <input name="origin" id="origin" type="text" 
+                                   placeholder="z.B. Wien, München, London..." 
+                                   autocomplete="off" required>
+                            <div class="city-suggestions" id="origin-suggestions"></div>
+                        </div>
+                        <div class="city-status" id="origin-status"></div>
                     </div>
                     <div class="form-group">
                         <label for="destination">🎯 Nach</label>
-                        <select name="destination" required>
-                            <option value="BCN">Barcelona (BCN)</option>
-                            <option value="FCO">Rom (FCO)</option>
-                            <option value="CDG">Paris (CDG)</option>
-                            <option value="LHR">London (LHR)</option>
-                            <option value="AMS">Amsterdam (AMS)</option>
-                        </select>
+                        <div class="city-input">
+                            <input name="destination" id="destination" type="text" 
+                                   placeholder="z.B. Barcelona, Rom, Paris..." 
+                                   autocomplete="off" required>
+                            <div class="city-suggestions" id="destination-suggestions"></div>
+                        </div>
+                        <div class="city-status" id="destination-status"></div>
                     </div>
                 </div>
                 
@@ -198,55 +303,377 @@
                     </div>
                 </div>
                 
-                <button type="submit" class="search-btn">
+                <button type="submit" class="search-btn" id="search-btn">
                     🔍 Beste Kombinationen finden
                 </button>
             </div>
         </form>
+        
+        <div class="popular-destinations">
+            <h4>🔥 Beliebte Reiseziele</h4>
+            <div class="dest-grid">
+                <div class="dest-item" onclick="setDestination('Wien', 'VIE')">Wien 🇦🇹</div>
+                <div class="dest-item" onclick="setDestination('Graz', 'GRZ')">Graz 🇦🇹</div>
+                <div class="dest-item" onclick="setDestination('Salzburg', 'SZG')">Salzburg 🇦🇹</div>
+                <div class="dest-item" onclick="setDestination('München', 'MUC')">München 🇩🇪</div>
+                <div class="dest-item" onclick="setDestination('Berlin', 'BER')">Berlin 🇩🇪</div>
+                <div class="dest-item" onclick="setDestination('Barcelona', 'BCN')">Barcelona 🇪🇸</div>
+                <div class="dest-item" onclick="setDestination('Rom', 'FCO')">Rom 🇮🇹</div>
+                <div class="dest-item" onclick="setDestination('Paris', 'CDG')">Paris 🇫🇷</div>
+                <div class="dest-item" onclick="setDestination('London', 'LHR')">London 🇬🇧</div>
+                <div class="dest-item" onclick="setDestination('Amsterdam', 'AMS')">Amsterdam 🇳🇱</div>
+                <div class="dest-item" onclick="setDestination('Madrid', 'MAD')">Madrid 🇪🇸</div>
+                <div class="dest-item" onclick="setDestination('Mallorca', 'PMI')">Mallorca 🇪🇸</div>
+                <div class="dest-item" onclick="setDestination('Ibiza', 'IBZ')">Ibiza 🇪🇸</div>
+                <div class="dest-item" onclick="setDestination('Nice', 'NCE')">Nice 🇫🇷</div>
+                <div class="dest-item" onclick="setDestination('Santorini', 'JTR')">Santorini 🇬🇷</div>
+                <div class="dest-item" onclick="setDestination('Istanbul', 'IST')">Istanbul 🇹🇷</div>
+                <div class="dest-item" onclick="setDestination('New York', 'JFK')">New York 🇺🇸</div>
+                <div class="dest-item" onclick="setDestination('Las Vegas', 'LAS')">Las Vegas 🇺🇸</div>
+                <div class="dest-item" onclick="setDestination('Miami', 'MIA')">Miami 🇺🇸</div>
+                <div class="dest-item" onclick="setDestination('Tokyo', 'NRT')">Tokyo 🇯🇵</div>
+                <div class="dest-item" onclick="setDestination('Bangkok', 'BKK')">Bangkok 🇹🇭</div>
+                <div class="dest-item" onclick="setDestination('Singapore', 'SIN')">Singapore 🇸🇬</div>
+                <div class="dest-item" onclick="setDestination('Bali', 'DPS')">Bali 🇮🇩</div>
+                <div class="dest-item" onclick="setDestination('Dubai', 'DXB')">Dubai 🇦🇪</div>
+                <div class="dest-item" onclick="setDestination('Sydney', 'SYD')">Sydney 🇦🇺</div>
+            </div>
+        </div>
     </div>
 
     <div class="features">
-        <h2>🚀 Platform Features</h2>
+        <h2>🚀 Smart City Search</h2>
         
         <div class="feature-grid">
             <div class="feature">
                 <div class="feature-icon">🧠</div>
-                <h3>Smart Combinations</h3>
-                <p>Automatische Flug + Hotel Kombinationen für optimale Preise</p>
+                <h3>Intelligente Erkennung</h3>
+                <p>Gibt einfach "Wien" oder "Barcelona" ein - wir erkennen automatisch die richtigen Flughäfen</p>
             </div>
             
             <div class="feature">
-                <div class="feature-icon">💰</div>
-                <h3>Budget Optimization</h3>
-                <p>Intelligente Preisvergleiche innerhalb deines Budgets</p>
+                <div class="feature-icon">🔍</div>
+                <h3>Auto-Vervollständigung</h3>
+                <p>Während du tippst, schlagen wir passende Städte vor mit IATA-Codes</p>
             </div>
             
             <div class="feature">
                 <div class="feature-icon">⚡</div>
-                <h3>Real-time Data</h3>
-                <p>Live-Daten von Skyscanner und anderen Reise-APIs</p>
+                <h3>Sofort-Suche</h3>
+                <p>Keine Dropdown-Menüs - einfach tippen und direkt die besten Deals finden</p>
             </div>
         </div>
     </div>
 
     <script>
-        // Set default dates (30 days from now for departure, +3 days for return)
+        // Stadt-zu-IATA Mapping (Client-seitig für schnelle Suche)
+        const CITY_MAP = {
+            // Österreich
+            'wien': 'VIE', 'vienna': 'VIE',
+            'graz': 'GRZ', 'salzburg': 'SZG', 'linz': 'LNZ', 'innsbruck': 'INN', 'klagenfurt': 'KLU',
+            
+            // Deutschland
+            'münchen': 'MUC', 'munich': 'MUC', 'berlin': 'BER', 'hamburg': 'HAM',
+            'düsseldorf': 'DUS', 'frankfurt': 'FRA', 'stuttgart': 'STR',
+            'köln': 'CGN', 'cologne': 'CGN', 'hannover': 'HAJ', 'nürnberg': 'NUE',
+            'nuremberg': 'NUE', 'leipzig': 'LEJ', 'dresden': 'DRS', 'bremen': 'BRE',
+            
+            // Europa - Spanien & Portugal
+            'barcelona': 'BCN', 'madrid': 'MAD', 'valencia': 'VLC', 'seville': 'SVQ',
+            'sevilla': 'SVQ', 'bilbao': 'BIO', 'mallorca': 'PMI', 'palma': 'PMI',
+            'ibiza': 'IBZ', 'lisboa': 'LIS', 'lisbon': 'LIS', 'porto': 'OPO',
+            
+            // Europa - Italien
+            'rom': 'FCO', 'rome': 'FCO', 'milano': 'MXP', 'milan': 'MXP', 'mailand': 'MXP',
+            'venedig': 'VCE', 'venice': 'VCE', 'florenz': 'FLR', 'florence': 'FLR',
+            'naples': 'NAP', 'neapel': 'NAP', 'turin': 'TRN', 'bologna': 'BLQ',
+            'catania': 'CTA', 'palermo': 'PMO', 'bari': 'BRI',
+            
+            // Europa - Frankreich
+            'paris': 'CDG', 'nice': 'NCE', 'nizza': 'NCE', 'lyon': 'LYS',
+            'marseille': 'MRS', 'toulouse': 'TLS', 'bordeaux': 'BOD', 'strasbourg': 'SXB',
+            
+            // Europa - UK & Ireland
+            'london': 'LHR', 'edinburgh': 'EDI', 'glasgow': 'GLA', 'manchester': 'MAN',
+            'birmingham': 'BHX', 'dublin': 'DUB', 'cork': 'ORK',
+            
+            // Europa - Benelux & Schweiz
+            'amsterdam': 'AMS', 'brussels': 'BRU', 'brüssel': 'BRU', 'antwerp': 'ANR',
+            'geneva': 'GVA', 'genf': 'GVA', 'zurich': 'ZUR', 'zürich': 'ZUR',
+            'basel': 'BSL', 'bern': 'BRN',
+            
+            // Europa - Nordisch
+            'stockholm': 'ARN', 'oslo': 'OSL', 'kopenhagen': 'CPH', 'copenhagen': 'CPH',
+            'helsinki': 'HEL', 'reykjavik': 'KEF',
+            
+            // Europa - Osteuropa
+            'prag': 'PRG', 'prague': 'PRG', 'budapest': 'BUD', 'warsaw': 'WAW',
+            'warschau': 'WAW', 'krakow': 'KRK', 'krakau': 'KRK', 'bucharest': 'OTP',
+            'bukarest': 'OTP', 'belgrade': 'BEG', 'belgrad': 'BEG', 'zagreb': 'ZAG',
+            'split': 'SPU', 'dubrovnik': 'DBV', 'ljubljana': 'LJU', 'bratislava': 'BTS',
+            'riga': 'RIX', 'tallinn': 'TLL', 'vilnius': 'VNO', 'moscow': 'SVO',
+            'moskau': 'SVO', 'st petersburg': 'LED', 'kiev': 'KBP', 'kyiv': 'KBP',
+            'minsk': 'MSQ', 'sofia': 'SOF',
+            
+            // Europa - Griechenland & Türkei
+            'athen': 'ATH', 'athens': 'ATH', 'thessaloniki': 'SKG', 'santorini': 'JTR',
+            'mykonos': 'JMK', 'rhodes': 'RHO', 'crete': 'HER', 'corfu': 'CFU',
+            'istanbul': 'IST', 'cyprus': 'LCA',
+            
+            // USA
+            'new york': 'JFK', 'nyc': 'JFK', 'los angeles': 'LAX', 'la': 'LAX',
+            'chicago': 'ORD', 'miami': 'MIA', 'san francisco': 'SFO', 'sf': 'SFO',
+            'las vegas': 'LAS', 'vegas': 'LAS', 'seattle': 'SEA', 'boston': 'BOS',
+            'washington': 'DCA', 'dc': 'DCA', 'philadelphia': 'PHL', 'atlanta': 'ATL',
+            'denver': 'DEN', 'phoenix': 'PHX', 'dallas': 'DFW', 'houston': 'IAH',
+            'orlando': 'MCO', 'tampa': 'TPA', 'detroit': 'DTW', 'minneapolis': 'MSP',
+            'portland': 'PDX', 'san diego': 'SAN', 'salt lake city': 'SLC',
+            
+            // Kanada
+            'toronto': 'YYZ', 'vancouver': 'YVR', 'montreal': 'YUL', 'calgary': 'YYC',
+            
+            // Asien - Japan & Korea
+            'tokyo': 'NRT', 'osaka': 'KIX', 'kyoto': 'KIX', 'seoul': 'ICN', 'busan': 'PUS',
+            
+            // Asien - China & Hong Kong
+            'beijing': 'PEK', 'peking': 'PEK', 'shanghai': 'PVG', 'guangzhou': 'CAN',
+            'hong kong': 'HKG', 'hongkong': 'HKG', 'taipei': 'TPE',
+            
+            // Asien - Südostasien
+            'bangkok': 'BKK', 'phuket': 'HKT', 'singapore': 'SIN', 'singapur': 'SIN',
+            'kuala lumpur': 'KUL', 'jakarta': 'CGK', 'bali': 'DPS', 'denpasar': 'DPS',
+            'manila': 'MNL', 'ho chi minh': 'SGN', 'saigon': 'SGN', 'hanoi': 'HAN',
+            
+            // Asien - Indien
+            'mumbai': 'BOM', 'bombay': 'BOM', 'delhi': 'DEL', 'new delhi': 'DEL',
+            'bangalore': 'BLR', 'chennai': 'MAA', 'kolkata': 'CCU', 'goa': 'GOI',
+            
+            // Middle East
+            'dubai': 'DXB', 'abu dhabi': 'AUH', 'doha': 'DOH', 'kuwait': 'KWI',
+            'riyadh': 'RUH', 'jeddah': 'JED', 'tel aviv': 'TLV', 'beirut': 'BEY',
+            'amman': 'AMM', 'tehran': 'IKA', 'teheran': 'IKA',
+            
+            // Afrika
+            'cairo': 'CAI', 'kairo': 'CAI', 'casablanca': 'CMN', 'marrakech': 'RAK',
+            'cape town': 'CPT', 'kapstadt': 'CPT', 'johannesburg': 'JNB',
+            
+            // Ozeanien
+            'sydney': 'SYD', 'melbourne': 'MEL', 'brisbane': 'BNE', 'perth': 'PER',
+            'auckland': 'AKL', 'wellington': 'WLG', 'christchurch': 'CHC',
+            
+            // Aliases
+            'muenchen': 'MUC', 'duesseldorf': 'DUS', 'koeln': 'CGN',
+            'ny': 'JFK', 'lon': 'LHR', 'par': 'CDG'
+        };
+
+        // Set default dates
         const today = new Date();
         const departure = new Date(today);
         departure.setDate(today.getDate() + 30);
         const returnDate = new Date(departure);
         returnDate.setDate(departure.getDate() + 3);
 
-        // Format dates for input fields
-        const formatDate = (date) => date.toISOString().split('T')[0];
-
-        // Set values
-        document.querySelector('input[name="departure"]').value = formatDate(departure);
-        document.querySelector('input[name="return_date"]').value = formatDate(returnDate);
+        document.querySelector('input[name="departure"]').value = departure.toISOString().split('T')[0];
+        document.querySelector('input[name="return_date"]').value = returnDate.toISOString().split('T')[0];
 
         // Set minimum dates
         document.querySelectorAll('input[type="date"]').forEach(input => {
-            input.min = formatDate(today);
+            input.min = today.toISOString().split('T')[0];
+        });
+
+        // City input handlers
+        let activeField = null;
+
+        function setupCityInput(inputId) {
+            const input = document.getElementById(inputId);
+            const suggestions = document.getElementById(inputId + '-suggestions');
+            const status = document.getElementById(inputId + '-status');
+
+            input.addEventListener('input', function() {
+                const value = this.value.trim().toLowerCase();
+                
+                if (value.length < 2) {
+                    suggestions.style.display = 'none';
+                    status.textContent = '';
+                    return;
+                }
+
+                // Find matches
+                const matches = findCityMatches(value);
+                
+                if (matches.length > 0) {
+                    showSuggestions(suggestions, matches, inputId);
+                    
+                    // Check for exact match
+                    const exactMatch = matches.find(m => m.city.toLowerCase() === value);
+                    if (exactMatch) {
+                        status.textContent = `✓ ${exactMatch.city} (${exactMatch.iata})`;
+                        status.className = 'city-status';
+                    } else {
+                        status.textContent = `Tippe weiter für Vorschläge...`;
+                        status.className = 'city-status warning';
+                    }
+                } else {
+                    suggestions.style.display = 'none';
+                    status.textContent = `🔍 Wir suchen automatisch nach diesem Ort`;
+                    status.className = 'city-status warning';
+                }
+            });
+
+            input.addEventListener('blur', function() {
+                // Delay hiding to allow click on suggestion
+                setTimeout(() => {
+                    suggestions.style.display = 'none';
+                }, 200);
+            });
+
+            input.addEventListener('focus', function() {
+                activeField = inputId;
+                if (this.value.length >= 2) {
+                    const matches = findCityMatches(this.value.toLowerCase());
+                    if (matches.length > 0) {
+                        showSuggestions(suggestions, matches, inputId);
+                    }
+                }
+            });
+        }
+
+        function findCityMatches(query) {
+            const matches = [];
+            
+            for (const [city, iata] of Object.entries(CITY_MAP)) {
+                if (city.includes(query) || query.includes(city)) {
+                    const score = city.startsWith(query) ? 1 : 0.5;
+                    matches.push({
+                        city: city.charAt(0).toUpperCase() + city.slice(1),
+                        iata: iata,
+                        score: score
+                    });
+                }
+            }
+            
+            // Sort by relevance
+            matches.sort((a, b) => b.score - a.score);
+            return matches.slice(0, 5); // Top 5
+        }
+
+        function showSuggestions(container, matches, inputId) {
+            container.innerHTML = '';
+            
+            matches.forEach(match => {
+                const item = document.createElement('div');
+                item.className = 'suggestion-item';
+                item.innerHTML = `
+                    <span class="suggestion-city">${match.city}</span>
+                    <span class="suggestion-iata">${match.iata}</span>
+                `;
+                
+                item.addEventListener('click', () => {
+                    selectCity(inputId, match.city, match.iata);
+                });
+                
+                container.appendChild(item);
+            });
+            
+            container.style.display = 'block';
+        }
+
+        function selectCity(inputId, city, iata) {
+            const input = document.getElementById(inputId);
+            const suggestions = document.getElementById(inputId + '-suggestions');
+            const status = document.getElementById(inputId + '-status');
+            
+            input.value = city;
+            suggestions.style.display = 'none';
+            status.textContent = `✓ ${city} (${iata})`;
+            status.className = 'city-status';
+            
+            // Store IATA code as data attribute for form submission
+            input.setAttribute('data-iata', iata);
+        }
+
+        function setDestination(city, iata) {
+            // Set destination field when clicking popular destinations
+            if (activeField === 'origin') {
+                selectCity('origin', city, iata);
+            } else {
+                selectCity('destination', city, iata);
+                activeField = 'destination';
+            }
+        }
+
+        // Setup both city inputs
+        setupCityInput('origin');
+        setupCityInput('destination');
+
+        // Form submission handler
+        document.getElementById('search-form').addEventListener('submit', function(e) {
+            const originInput = document.getElementById('origin');
+            const destInput = document.getElementById('destination');
+            
+            // Basic validation - just check if fields are not empty
+            const originValue = originInput.value.trim();
+            const destValue = destInput.value.trim();
+            
+            if (!originValue || !destValue) {
+                e.preventDefault();
+                alert('Bitte gib Start- und Zielort ein');
+                return false;
+            }
+            
+            // Show loading state
+            const submitBtn = document.getElementById('search-btn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = '🔍 Suche läuft...';
+        });
+
+        // Popular destination click handler
+        document.querySelectorAll('.dest-item').forEach(item => {
+            item.addEventListener('click', function() {
+                const text = this.textContent.trim();
+                const city = text.split(' ')[0]; // Extract city name before flag
+                
+                // Find IATA code
+                const cityLower = city.toLowerCase();
+                let iata = '';
+                
+                // Special cases for display names vs. internal names
+                const displayToInternal = {
+                    'wien': 'wien',
+                    'rom': 'rom', 
+                    'münchen': 'münchen'
+                };
+                
+                const internalCity = displayToInternal[cityLower] || cityLower;
+                iata = CITY_MAP[internalCity] || '';
+                
+                if (iata) {
+                    // Determine which field to fill
+                    const originInput = document.getElementById('origin');
+                    const destInput = document.getElementById('destination');
+                    
+                    if (!originInput.value) {
+                        selectCity('origin', city, iata);
+                        destInput.focus();
+                    } else if (!destInput.value) {
+                        selectCity('destination', city, iata);
+                    } else {
+                        // Both filled, replace destination
+                        selectCity('destination', city, iata);
+                    }
+                }
+            });
+        });
+
+        // Keyboard navigation for suggestions
+        document.addEventListener('keydown', function(e) {
+            if (activeField) {
+                const suggestions = document.getElementById(activeField + '-suggestions');
+                if (suggestions.style.display === 'block') {
+                    const items = suggestions.querySelectorAll('.suggestion-item');
+                    // Add keyboard navigation here if needed
+                }
+            }
         });
     </script>
 </body>
