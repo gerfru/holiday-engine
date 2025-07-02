@@ -346,6 +346,9 @@
             <button class="tab-button" onclick="switchTab('hotels')">
                 🏨 Hotels ({{ hotels|length }})
             </button>
+            <button class="tab-button" onclick="switchTab('airbnb')">
+                🏠 Airbnb ({{ airbnb_properties|length }})
+            </button>
             <button class="tab-button" onclick="switchTab('combinations')">
                 🎯 Smart Combinations ({{ combinations|length }})
             </button>
@@ -607,6 +610,130 @@
                 {% endif %}
             </div>
 
+            <!-- Airbnb Tab -->
+            <div id="airbnb-tab" class="tab-pane">
+                {% if airbnb_properties %}
+                <!-- Filters -->
+                <div class="filters">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label>Max Price/Night (€)</label>
+                            <input type="number" id="airbnb-price-filter" placeholder="e.g. 150" min="0">
+                        </div>
+                        <div class="filter-group">
+                            <label>Min Rating</label>
+                            <select id="airbnb-rating-filter">
+                                <option value="">All Ratings</option>
+                                <option value="4.5">4.5+ Stars</option>
+                                <option value="4">4+ Stars</option>
+                                <option value="3.5">3.5+ Stars</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Property Type</label>
+                            <select id="airbnb-type-filter">
+                                <option value="">All Types</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Host Type</label>
+                            <select id="airbnb-host-filter">
+                                <option value="">All Hosts</option>
+                                <option value="true">Superhost Only</option>
+                                <option value="false">Regular Hosts</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results Info -->
+                <div class="results-info">
+                    <span class="results-count" id="airbnb-count">Showing all properties</span>
+                    <button class="clear-filters" onclick="clearAirbnbFilters()">Clear Filters</button>
+                </div>
+
+                <!-- Airbnb Properties Table -->
+                <div class="table-container">
+                    <table id="airbnb-table">
+                        <thead>
+                            <tr>
+                                <th class="sortable" data-sort="name">Property Name</th>
+                                <th class="sortable" data-sort="rating">Rating</th>
+                                <th class="sortable" data-sort="type">Property Type</th>
+                                <th class="sortable" data-sort="bedrooms">Rooms</th>
+                                <th class="sortable" data-sort="location">Location</th>
+                                <th class="sortable" data-sort="host">Host</th>
+                                <th class="sortable" data-sort="price">Price/Night</th>
+                                <th class="sortable" data-sort="total">Total ({{ nights }} nights)</th>
+                                <th>Book</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for property in airbnb_properties %}
+                            <tr class="airbnb-row" 
+                                data-price="{{ property.price }}" 
+                                data-rating="{{ property.rating }}" 
+                                data-type="{{ property.property_type }}"
+                                data-bedrooms="{{ property.bedrooms }}"
+                                data-location="{{ property.location }}"
+                                data-host="{{ property.is_superhost }}"
+                                data-total="{{ property.price * nights }}">
+                                <td class="property-name">
+                                    <div style="font-weight: 600; margin-bottom: 4px;">{{ property.name }}</div>
+                                    <div style="font-size: 0.85rem; color: #666;">
+                                        {% if property.amenities %}
+                                            {% for amenity in property.amenities[:3] %}
+                                                <span style="background: #f1f2f6; padding: 2px 6px; border-radius: 3px; margin-right: 4px; font-size: 0.8rem;">{{ amenity }}</span>
+                                            {% endfor %}
+                                            {% if property.amenities|length > 3 %}+{{ property.amenities|length - 3 }} more{% endif %}
+                                        {% endif %}
+                                    </div>
+                                </td>
+                                <td class="rating">
+                                    {% for i in range(property.rating|int) %}⭐{% endfor %}
+                                    <span class="rating-number">{{ property.rating }}</span>
+                                    {% if property.review_count %}
+                                        <div style="font-size: 0.8rem; color: #666;">({{ property.review_count }} reviews)</div>
+                                    {% endif %}
+                                </td>
+                                <td>{{ property.property_type|title }}</td>
+                                <td class="rooms-info">
+                                    <div>🛏️ {{ property.bedrooms }} bed{{ 's' if property.bedrooms != 1 else '' }}</div>
+                                    <div style="font-size: 0.85rem; color: #666;">🚿 {{ property.bathrooms }} bath{{ 's' if property.bathrooms != 1 else '' }}</div>
+                                </td>
+                                <td class="location">{{ property.location }}</td>
+                                <td class="host-info">
+                                    <div style="font-weight: 500;">{{ property.host_name }}</div>
+                                    {% if property.is_superhost %}
+                                        <div style="font-size: 0.8rem; color: #27ae60; font-weight: 600;">✨ Superhost</div>
+                                    {% endif %}
+                                </td>
+                                <td class="price">{{ property.price }}€</td>
+                                <td class="price">{{ property.price * nights }}€</td>
+                                <td>
+                                    {% if property.url %}
+                                        <a href="{{ property.url }}" target="_blank" class="book-link external">
+                                            🏠 Book on Airbnb
+                                        </a>
+                                    {% else %}
+                                        <a href="https://www.airbnb.com/s/{{ destination }}/homes?checkin={{ checkin }}&checkout={{ checkout }}&adults={{ persons }}" target="_blank" class="book-link">
+                                            🔍 Search on Airbnb
+                                        </a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="no-results">
+                    <h2>😔 No Airbnb Properties Found</h2>
+                    <p>No Airbnb properties available for the selected destination and dates.</p>
+                </div>
+                {% endif %}
+            </div>
+
             <!-- Combinations Tab -->
             <div id="combinations-tab" class="tab-pane">
                 {% if combinations %}
@@ -626,8 +753,10 @@
                                 <div style="font-size: 1.3rem; font-weight: bold; color: #333;">{{ combo.flight_cost }}€</div>
                             </div>
                             <div style="text-align: center; padding: 15px; background: #f8f9fa; border-radius: 8px;">
-                                <div style="font-size: 0.9rem; color: #666; margin-bottom: 5px;">🏨 Hotel ({{ combo.nights }} nights)</div>
-                                <div style="font-size: 1.3rem; font-weight: bold; color: #333;">{{ combo.hotel_cost }}€</div>
+                                <div style="font-size: 0.9rem; color: #666; margin-bottom: 5px;">
+                                    {% if combo.accommodation_type == 'hotel' %}🏨 Hotel{% else %}🏠 Airbnb{% endif %} ({{ combo.nights }} nights)
+                                </div>
+                                <div style="font-size: 1.3rem; font-weight: bold; color: #333;">{{ combo.accommodation_cost }}€</div>
                             </div>
                         </div>
                     </div>
@@ -668,10 +797,10 @@
                 // Handle numeric columns
                 if (column === 'price' || column === 'rating' || column === 'stops' || column === 'total') {
                     if (column === 'price') {
-                        // For hotels, use data-price (per night), for flights use text content
+                        // For hotels/Airbnb, use data-price (per night), for flights use text content
                         const row_a = a.closest('tr');
                         const row_b = b.closest('tr');
-                        if (row_a.classList.contains('hotel-row')) {
+                        if (row_a.classList.contains('hotel-row') || row_a.classList.contains('airbnb-row')) {
                             aVal = parseFloat(row_a.dataset.price) || 0;
                             bVal = parseFloat(row_b.dataset.price) || 0;
                         } else {
@@ -778,6 +907,67 @@
                 option.textContent = location;
                 locationSelect.appendChild(option);
             });
+
+            // Populate Airbnb property type filter
+            const airbnbTypes = new Set();
+            document.querySelectorAll('.airbnb-row').forEach(row => {
+                airbnbTypes.add(row.dataset.type);
+            });
+            const airbnbTypeSelect = document.getElementById('airbnb-type-filter');
+            if (airbnbTypeSelect) {
+                airbnbTypes.forEach(type => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.textContent = type;
+                    airbnbTypeSelect.appendChild(option);
+                });
+            }
+        }
+
+        function applyAirbnbFilters() {
+            const priceFilter = document.getElementById('airbnb-price-filter').value;
+            const ratingFilter = document.getElementById('airbnb-rating-filter').value;
+            const typeFilter = document.getElementById('airbnb-type-filter').value;
+            const hostFilter = document.getElementById('airbnb-host-filter').value;
+
+            let visibleCount = 0;
+
+            document.querySelectorAll('.airbnb-row').forEach(row => {
+                let show = true;
+
+                // Price filter
+                if (priceFilter && parseFloat(row.dataset.price) > parseFloat(priceFilter)) {
+                    show = false;
+                }
+
+                // Rating filter
+                if (ratingFilter && parseFloat(row.dataset.rating) < parseFloat(ratingFilter)) {
+                    show = false;
+                }
+
+                // Property type filter
+                if (typeFilter && row.dataset.type !== typeFilter) {
+                    show = false;
+                }
+
+                // Host type filter
+                if (hostFilter !== '' && row.dataset.host !== hostFilter) {
+                    show = false;
+                }
+
+                row.style.display = show ? '' : 'none';
+                if (show) visibleCount++;
+            });
+
+            document.getElementById('airbnb-count').textContent = `Showing ${visibleCount} properties`;
+        }
+
+        function clearAirbnbFilters() {
+            document.getElementById('airbnb-price-filter').value = '';
+            document.getElementById('airbnb-rating-filter').value = '';
+            document.getElementById('airbnb-type-filter').value = '';
+            document.getElementById('airbnb-host-filter').value = '';
+            applyAirbnbFilters();
         }
 
         function applyFlightFilters() {
@@ -896,6 +1086,12 @@
             document.getElementById('hotel-rating-filter')?.addEventListener('change', applyHotelFilters);
             document.getElementById('hotel-type-filter')?.addEventListener('change', applyHotelFilters);
             document.getElementById('hotel-location-filter')?.addEventListener('change', applyHotelFilters);
+
+            // Airbnb filters
+            document.getElementById('airbnb-price-filter')?.addEventListener('input', applyAirbnbFilters);
+            document.getElementById('airbnb-rating-filter')?.addEventListener('change', applyAirbnbFilters);
+            document.getElementById('airbnb-type-filter')?.addEventListener('change', applyAirbnbFilters);
+            document.getElementById('airbnb-host-filter')?.addEventListener('change', applyAirbnbFilters);
         });
     </script>
 </body>

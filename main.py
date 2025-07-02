@@ -1,23 +1,29 @@
 # main.py - Clean FastAPI Travel App
 from fastapi import FastAPI, Request, Form
 from typing import Optional
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import asyncio
 import os
 import csv
+import json
 from datetime import datetime, timedelta
 
-# Import deine bestehende API
-from travel_api import search_flights_apify, search_hotels_apify
-from smart_city_lookup import hybrid_city_to_iata
+# Import APIs and simplified city resolver
+from travel_api import search_flights_apify, search_hotels_apify, search_airbnb_apify
+from smart_city_lookup_simple import hybrid_city_to_iata
+from smart_search_with_progress import smart_search_with_progress
 
 # FastAPI Setup
 app = FastAPI(title="Travel Comparison Platform")
 
 # Templates setup
 templates = Jinja2Templates(directory="templates")
+
+# Global progress tracking
+search_progress = {}
+search_results = {}  # Store search results by search_id
 
 # Health check
 @app.get("/health")
@@ -29,6 +35,114 @@ async def health_check():
 async def home(request: Request):
     """Hauptseite - lädt HTML Template"""
     return templates.TemplateResponse("index.html", {"request": request})
+
+# Progress tracking functions
+def update_search_progress(search_id: str, step: str, message: str = None, progress: int = None, results: dict = None, redirect_url: str = None):
+    """Update search progress for a given search ID"""
+    if search_id not in search_progress:
+        search_progress[search_id] = {"status": "started", "step": "initialized"}
+    
+    search_progress[search_id].update({
+        "step": step,
+        "message": message,
+        "progress": progress,
+        "results": results,
+        "redirect_url": redirect_url,
+        "timestamp": datetime.now().isoformat()
+    })
+
+async def generate_progress_stream(search_id: str):
+    """Generate Server-Sent Events stream for search progress"""
+    while search_id not in search_progress:
+        await asyncio.sleep(0.1)
+    
+    last_update = None
+    while True:
+        current_progress = search_progress.get(search_id, {})
+        
+        # Only send update if something changed
+        if current_progress != last_update:
+            data = json.dumps(current_progress)
+            yield f"data: {data}\n\n"
+            last_update = current_progress.copy()
+            
+            # Stop streaming if search is completed
+            if current_progress.get("redirect_url"):
+                break
+        
+        await asyncio.sleep(0.5)  # Check every 500ms
+
+@app.get("/search-progress/{search_id}")
+async def search_progress_stream(search_id: str):
+    """Server-Sent Events endpoint for search progress"""
+    return StreamingResponse(
+        generate_progress_stream(search_id),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+        }
+    )
+
+@app.get("/search-with-progress", response_class=HTMLResponse)
+async def search_with_progress_page(request: Request, search_id: str = None):
+    """Show search progress page"""
+    return templates.TemplateResponse("search_with_progress.html", {
+        "request": request,
+        "search_id": search_id
+    })
+
+@app.post("/search-with-progress")
+async def start_search_with_progress(
+    request: Request,
+    origin: str = Form(...),
+    destination: str = Form(...),
+    departure: str = Form(...),
+    return_date: str = Form(...),
+    budget: Optional[str] = Form(None),
+    persons: int = Form(2)
+):
+    """Start search with progress tracking"""
+    import uuid
+    search_id = str(uuid.uuid4())[:8]
+    
+    # Create progress callback
+    def progress_callback(step: str, message: str = None, progress: int = None, results: dict = None):
+        update_search_progress(search_id, step, message, progress, results)
+    
+    # Start background search task
+    async def background_search():
+        try:
+            result = await smart_search_with_progress(
+                origin, destination, departure, return_date, budget, persons, progress_callback
+            )
+            
+            if result.get('success'):
+                # Store results
+                search_results[search_id] = result['results']
+                # Set redirect URL to results page
+                update_search_progress(
+                    search_id, 'completed', 'Suche abgeschlossen!', 100, 
+                    result['summary'], f'/results/{search_id}'
+                )
+            else:
+                # Handle error
+                update_search_progress(
+                    search_id, 'error', f"Fehler: {result.get('error', 'Unbekannter Fehler')}", 0
+                )
+        
+        except Exception as e:
+            update_search_progress(
+                search_id, 'error', f"Fehler: {str(e)[:50]}...", 0
+            )
+    
+    # Start background task
+    asyncio.create_task(background_search())
+    
+    # Redirect to progress page
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"/search-with-progress?search_id={search_id}", status_code=302)
 
 # Simple flight search (for testing)
 @app.post("/test-flights")
@@ -76,7 +190,7 @@ async def smart_search(
         
         print(f"🧠 Smart Search: {origin}→{destination}, {persons} persons, budget: {budget_int}")
         
-        # Step 0: Resolve city names to IATA codes
+        # Step 0: Resolve city names to IATA codes (using simplified resolver)
         print(f"🔍 Resolving origin city: {origin}")
         origin_iata, origin_city, origin_suggestions = await hybrid_city_to_iata(origin)
         if not origin_iata:
@@ -131,6 +245,17 @@ async def smart_search(
                 "error": f"Hotel search failed: Unable to find hotels in {city}. Please try again later or contact support."
             })
         
+        # Step 3: Search Airbnb properties
+        print(f"📡 Searching Airbnb properties in {city}...")
+        try:
+            airbnb_properties = await search_airbnb_apify(city, departure, return_date, persons)
+            print(f"✅ Found {len(airbnb_properties)} Airbnb properties")
+        except Exception as e:
+            print(f"❌ Failed to fetch Airbnb properties: {e}")
+            # Don't fail the entire search if Airbnb fails - just continue without it
+            airbnb_properties = []
+            print(f"⚠️ Continuing without Airbnb results")
+        
         # Check if we have any results to show
         if not outbound_flights and not return_flights:
             return templates.TemplateResponse("error.html", {
@@ -138,16 +263,16 @@ async def smart_search(
                 "error": f"No flights found for {origin_city} ↔ {dest_city} on the selected dates. Please try different dates or destinations."
             })
         
-        if not hotels:
+        if not hotels and not airbnb_properties:
             return templates.TemplateResponse("error.html", {
                 "request": request,
-                "error": f"No hotels found in {city} for the selected dates. Please try different dates or destinations."
+                "error": f"No accommodations found in {city} for the selected dates. Please try different dates or destinations."
             })
         
-        # Step 3: Create combinations
+        # Step 4: Create combinations
         print("🎯 Creating combinations...")
         combinations = create_combinations(
-            outbound_flights, return_flights, hotels, 
+            outbound_flights, return_flights, hotels, airbnb_properties,
             departure, return_date, budget_int, persons
         )
         print(f"✅ Created {len(combinations)} combinations")
@@ -168,15 +293,16 @@ async def smart_search(
             'budget': budget_int,
             'nights': nights
         }
-        export_search_results_to_csv(outbound_flights, return_flights, hotels, search_params)
+        export_search_results_to_csv(outbound_flights, return_flights, hotels, airbnb_properties, search_params)
 
-        # Step 4: Render results
+        # Step 5: Render results
         return templates.TemplateResponse("results.html", {
             "request": request,
             "combinations": combinations,
             "outbound_flights": outbound_flights,
             "return_flights": return_flights,
             "hotels": hotels,
+            "airbnb_properties": airbnb_properties,
             "origin": f"{origin_city} ({origin_iata})",
             "destination": f"{dest_city} ({dest_iata})",
             "origin_iata": origin_iata,
@@ -193,12 +319,44 @@ async def smart_search(
     except Exception as e:
         print(f"❌ Smart search error: {e}")
         return templates.TemplateResponse("error.html", {
-            "request": request,  # ← Fix: Pass the actual request object
+            "request": request,
             "error": str(e)
         })
 
-def create_combinations(outbound_flights, return_flights, hotels, departure, return_date, budget, persons):
-    """Create flight + hotel combinations"""
+@app.get("/results/{search_id}", response_class=HTMLResponse)
+async def show_search_results(request: Request, search_id: str):
+    """Show search results from progress search"""
+    if search_id not in search_results:
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": "Search results not found or expired."
+        })
+    
+    result_data = search_results[search_id]
+    
+    return templates.TemplateResponse("results.html", {
+        "request": request,
+        "combinations": result_data['combinations'],
+        "outbound_flights": result_data['outbound_flights'],
+        "return_flights": result_data['return_flights'],
+        "hotels": result_data['hotels'],
+        "airbnb_properties": result_data['airbnb_properties'],
+        "origin": result_data['origin'],
+        "destination": result_data['destination'],
+        "origin_iata": result_data['origin_iata'],
+        "dest_iata": result_data['dest_iata'],
+        "departure": result_data['departure'],
+        "return_date": result_data['return_date'],
+        "checkin": result_data['checkin'],
+        "checkout": result_data['checkout'],
+        "nights": result_data['nights'],
+        "budget": result_data['budget'],
+        "persons": result_data['persons']
+    })
+
+def create_combinations(outbound_flights, return_flights, hotels, airbnb_properties, departure, return_date, budget, persons):
+    """Create flight + accommodation combinations (hotels + Airbnb)"""
+    print(f"🎯 Creating combinations: {len(outbound_flights)} out + {len(return_flights)} return flights, {len(hotels)} hotels, {len(airbnb_properties)} airbnb")
     combinations = []
     
     # Calculate nights
@@ -209,15 +367,50 @@ def create_combinations(outbound_flights, return_flights, hotels, departure, ret
     
     print(f"📊 Calculating for {nights} nights, {persons} persons")
     
+    # Combine hotels and Airbnb properties for accommodation options
+    all_accommodations = []
+    
+    # Add hotels with type marking
+    for hotel in hotels[:3]:
+        hotel_copy = hotel.copy()
+        hotel_copy['accommodation_type'] = 'hotel'
+        all_accommodations.append(hotel_copy)
+    
+    # Add Airbnb properties with type marking
+    for airbnb in airbnb_properties[:3]:
+        airbnb_copy = airbnb.copy()
+        airbnb_copy['accommodation_type'] = 'airbnb'
+        all_accommodations.append(airbnb_copy)
+    
+    print(f"📊 Total accommodations: {len(hotels)} hotels + {len(airbnb_properties)} Airbnb = {len(all_accommodations)} options")
+    
+    # Create combinations - check if we have required data first
+    if not outbound_flights or not return_flights:
+        print("❌ No flights available for combinations")
+        return []
+    
+    if not all_accommodations:
+        print("❌ No accommodations available for combinations")
+        return []
+    
     # Limit to top options for performance
     for out_flight in outbound_flights[:3]:
         for ret_flight in return_flights[:3]:
-            for hotel in hotels[:3]:
+            for accommodation in all_accommodations:
                 
                 # Calculate costs
                 flight_cost = (out_flight['price'] + ret_flight['price']) * persons
-                hotel_cost = hotel['price'] * nights
-                total_cost = flight_cost + hotel_cost
+                
+                # Handle different accommodation pricing
+                if accommodation['accommodation_type'] == 'hotel':
+                    accommodation_cost = accommodation['price'] * nights
+                    accommodation_label = 'hotel'
+                else:  # airbnb
+                    # Airbnb price might be per night or total - use per night pricing
+                    accommodation_cost = accommodation['price'] * nights
+                    accommodation_label = 'airbnb'
+                
+                total_cost = flight_cost + accommodation_cost
                 
                 # Budget filter - make it more lenient for testing
                 if budget and total_cost > budget * 1.2:  # Allow 20% over budget
@@ -227,30 +420,30 @@ def create_combinations(outbound_flights, return_flights, hotels, departure, ret
                 combination = {
                     'outbound_flight': out_flight,
                     'return_flight': ret_flight,
-                    'hotel': hotel,
+                    'accommodation': accommodation,
+                    'accommodation_type': accommodation['accommodation_type'],
                     'flight_cost': flight_cost,
-                    'hotel_cost': hotel_cost,
+                    'accommodation_cost': accommodation_cost,
                     'total_cost': total_cost,
                     'nights': nights,
                     'persons': persons,
-                    'score': calculate_score(total_cost, hotel['rating'], budget)
+                    'score': calculate_score(total_cost, accommodation['rating'], budget)
                 }
                 
                 combinations.append(combination)
-                print(f"  ✅ Combination: {total_cost}€ total ({flight_cost}€ flights + {hotel_cost}€ hotel)")
-            
-        print(f"🔍 Generated {len(combinations)} combinations from this flight combo")
+                print(f"  ✅ Combination: {total_cost}€ total ({flight_cost}€ flights + {accommodation_cost}€ {accommodation_label})")
     
     # Sort by score
     combinations.sort(key=lambda x: x['score'], reverse=True)
+    print(f"✅ Created {len(combinations)} total combinations, returning top 5")
     return combinations[:5]  # Top 5
 
-def calculate_score(total_cost, hotel_rating, budget):
-    """Simple scoring algorithm"""
+def calculate_score(total_cost, accommodation_rating, budget):
+    """Simple scoring algorithm for hotels and Airbnb"""
     score = 0
     
-    # Hotel rating (0-50 points)
-    score += hotel_rating * 10
+    # Accommodation rating (0-50 points)
+    score += accommodation_rating * 10
     
     # Budget score (0-50 points)
     if budget:
@@ -266,7 +459,7 @@ def calculate_score(total_cost, hotel_rating, budget):
     
     return round(score, 1)
 
-def export_search_results_to_csv(outbound_flights, return_flights, hotels, search_params):
+def export_search_results_to_csv(outbound_flights, return_flights, hotels, airbnb_properties, search_params):
     """Export search results to CSV files for backup and analysis"""
     try:
         # Create output directory if it doesn't exist
@@ -371,6 +564,54 @@ def export_search_results_to_csv(outbound_flights, return_flights, hotels, searc
                     })
             
             print(f"✅ Exported {len(hotels)} hotels to {hotels_file}")
+        
+        # Export Airbnb properties
+        if airbnb_properties:
+            airbnb_file = os.path.join(output_dir, f"airbnb_{search_id}.csv")
+            with open(airbnb_file, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = [
+                    'search_timestamp', 'search_origin', 'search_destination', 'search_departure',
+                    'search_return', 'search_persons', 'search_budget', 'nights',
+                    'property_name', 'rating', 'review_count', 'property_type', 'bedrooms', 'bathrooms',
+                    'location', 'host_name', 'is_superhost', 'price_total_eur', 'price_per_night_eur',
+                    'amenities', 'source', 'booking_url', 'checkin', 'checkout'
+                ]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                
+                nights = search_params.get('nights', 1)
+                for property in airbnb_properties:
+                    # Handle amenities list
+                    amenities_str = ', '.join(property.get('amenities', [])[:5])  # First 5 amenities
+                    
+                    writer.writerow({
+                        'search_timestamp': timestamp,
+                        'search_origin': search_params['origin'],
+                        'search_destination': search_params['destination'],
+                        'search_departure': search_params['departure'],
+                        'search_return': search_params['return_date'],
+                        'search_persons': search_params['persons'],
+                        'search_budget': search_params.get('budget', ''),
+                        'nights': nights,
+                        'property_name': property.get('name', ''),
+                        'rating': property.get('rating', ''),
+                        'review_count': property.get('review_count', ''),
+                        'property_type': property.get('property_type', ''),
+                        'bedrooms': property.get('bedrooms', ''),
+                        'bathrooms': property.get('bathrooms', ''),
+                        'location': property.get('location', ''),
+                        'host_name': property.get('host_name', ''),
+                        'is_superhost': property.get('is_superhost', ''),
+                        'price_total_eur': property.get('total_price', '') or property.get('price', 0) * nights,
+                        'price_per_night_eur': property.get('price', ''),
+                        'amenities': amenities_str,
+                        'source': property.get('source', ''),
+                        'booking_url': property.get('url', ''),
+                        'checkin': search_params['departure'],
+                        'checkout': search_params['return_date']
+                    })
+            
+            print(f"✅ Exported {len(airbnb_properties)} Airbnb properties to {airbnb_file}")
             
         print(f"📁 Search results exported with ID: {search_id}")
         

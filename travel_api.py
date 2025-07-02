@@ -267,7 +267,7 @@ def _format_duration(minutes):
 
 async def search_hotels_apify(city: str, checkin: str, checkout: str, max_retries: int = 3):
     """
-    Search hotels using voyager/booking-scraper Apify Actor with retry logic
+    Search hotels using voyager/fast-booking-scraper Apify Actor with retry logic
     
     Args:
         city (str): City name (e.g., 'Barcelona')
@@ -285,25 +285,27 @@ async def search_hotels_apify(city: str, checkin: str, checkout: str, max_retrie
         print("❌ No APIFY_TOKEN found")
         return []
     
-    # Prepare actor input (voyager/booking-scraper format)
+    # Prepare actor input (voyager/fast-booking-scraper format) - request more results
     actor_input = {
         "currency": "EUR",
-        "language": "de",
-        "maxItems": 20,
-        "minMaxPrice": "0-999999",
+        "language": "en-us",           # Use proper language code (en-us)
+        "maxItems": 200,               # Increase from 20 to 200 for much more results
+        "minMaxPrice": "10-1000",      # Reasonable price range
         "search": city,
-        "sortBy": "price",
+        "sortBy": "review_score_and_price",  # Better sorting for quality + value
         "starsCountFilter": "any",
         "checkIn": checkin,
         "checkOut": checkout,
         "rooms": 1,
         "adults": 2,
-        "children": 0
+        "children": 0,
+        "includeAlternativeAccommodations": True,  # Include apartments, B&Bs, etc.
+        "destType": "city"             # Specify we're searching for a city
     }
     
     for attempt in range(max_retries):
         try:
-            print(f"📡 Starting voyager/booking-scraper actor (attempt {attempt + 1}/{max_retries})...")
+            print(f"📡 Starting voyager/fast-booking-scraper actor (attempt {attempt + 1}/{max_retries})...")
             print(f"📋 Input: {actor_input}")
             
             # Exponential backoff: wait 2^attempt seconds before retry
@@ -313,9 +315,9 @@ async def search_hotels_apify(city: str, checkin: str, checkout: str, max_retrie
                 await asyncio.sleep(wait_time)
             
             async with httpx.AsyncClient(timeout=300.0) as client:
-                # Call Apify API
+                # Call Apify API with fast booking scraper
                 response = await client.post(
-                    "https://api.apify.com/v2/acts/voyager~booking-scraper/run-sync-get-dataset-items",
+                    "https://api.apify.com/v2/acts/voyager~fast-booking-scraper/run-sync-get-dataset-items",
                     headers={"Authorization": f"Bearer {APIFY_TOKEN}"},
                     json=actor_input
                 )
@@ -365,11 +367,11 @@ async def search_hotels_apify(city: str, checkin: str, checkout: str, max_retrie
 
 
 def _parse_booking_hotels(data):
-    """Parse voyager/booking-scraper response data"""
+    """Parse voyager/fast-booking-scraper response data"""
     hotels = []
     
     try:
-        for item in data[:10]:  # Limit to 10 hotels
+        for item in data[:50]:  # Process up to 50 best hotels from 200 returned
             try:
                 # Extract basic info with safe type conversion
                 name = item.get('name', 'Unknown Hotel')
@@ -462,6 +464,246 @@ def _parse_booking_hotels(data):
 
 
 
+# =============================================================================
+# AIRBNB SEARCH - Apify Actor Integration
+# =============================================================================
+
+async def search_airbnb_apify(city: str, checkin: str, checkout: str, guests: int = 2, max_retries: int = 3):
+    """
+    Search Airbnb properties using tri_angle/new-fast-airbnb-scraper with retry logic
+    
+    Args:
+        city (str): City name (e.g., 'Barcelona')
+        checkin (str): Check-in date in YYYY-MM-DD format
+        checkout (str): Check-out date in YYYY-MM-DD format
+        guests (int): Number of guests
+        max_retries (int): Maximum number of retry attempts
+        
+    Returns:
+        list: List of Airbnb property dictionaries with name, price, rating, etc.
+    """
+    print(f"🏠 APIFY AIRBNB: {city} ({checkin} - {checkout}) for {guests} guests - LIMITED TO 100 RESULTS")
+    
+    # Check API token
+    if not APIFY_TOKEN:
+        print("❌ No APIFY_TOKEN found")
+        return []
+    
+    # Prepare actor input for new-fast-airbnb-scraper (maxItems goes in options!)
+    actor_input = {
+        "locationQueries": [city],
+        "locale": "de-DE",           # German locale
+        "currency": "EUR", 
+        "checkIn": checkin,
+        "checkOut": checkout,
+        "adults": guests,
+        "children": 0,
+        "infants": 0,
+        "pets": 0,
+        "priceMin": 10,
+        "priceMax": 999,
+        "maxReviews": 0,             # Skip individual reviews 
+        "includeReviews": False      # No review details
+    }
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"📡 Starting tri_angle/new-fast-airbnb-scraper actor (attempt {attempt + 1}/{max_retries})...")
+            print(f"📋 Input: {actor_input}")
+            
+            # Exponential backoff: wait 2^attempt seconds before retry
+            if attempt > 0:
+                wait_time = 2 ** attempt
+                print(f"⏳ Waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
+            
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                # Call Apify API with tri_angle/new-fast-airbnb-scraper (correct structure)
+                api_payload = {
+                    **actor_input,  # Input data
+                    "options": {
+                        "maxItems": 100,      # CORRECT: maxItems in options!
+                        "timeout": 120        # 2 minute timeout
+                    }
+                }
+                
+                response = await client.post(
+                    "https://api.apify.com/v2/acts/tri_angle~new-fast-airbnb-scraper/run-sync-get-dataset-items",
+                    headers={"Authorization": f"Bearer {APIFY_TOKEN}"},
+                    json=api_payload
+                )
+                
+                print(f"🔄 HTTP Status: {response.status_code}")
+                
+                # Check response status
+                if response.status_code not in [200, 201]:
+                    print(f"❌ API Error {response.status_code}: {response.text[:500]}")
+                    if attempt == max_retries - 1:  # Last attempt
+                        raise Exception(f"API returned status {response.status_code} after {max_retries} attempts")
+                    continue  # Retry
+                
+                # Parse response
+                data = response.json()
+                print(f"✅ API Response: {len(data)} Airbnb properties received")
+                
+                # Debug response structure
+                if data and len(data) > 0:
+                    first_item = data[0]
+                    print(f"🔍 Response structure: {list(first_item.keys())[:8]}...")
+                    print(f"🔍 Sample item: {first_item}")
+                else:
+                    print(f"🔍 Empty response or no data in response")
+                    print(f"🔍 Raw response length: {len(data) if data else 'None'}")
+                    print(f"🔍 Response type: {type(data)}")
+                
+                # Parse Airbnb properties from response
+                properties = _parse_airbnb_properties(data)
+                
+                if not properties:
+                    print("⚠️ No valid Airbnb properties found in API response")
+                    if attempt == max_retries - 1:  # Last attempt
+                        return []
+                    continue  # Retry
+                
+                print(f"✅ Successfully parsed {len(properties)} Airbnb properties")
+                return properties
+                
+        except asyncio.TimeoutError:
+            print(f"⏰ Request timeout on attempt {attempt + 1}")
+            if attempt == max_retries - 1:
+                raise Exception(f"Request timed out after {max_retries} attempts")
+                
+        except Exception as e:
+            print(f"❌ Airbnb API Error (attempt {attempt + 1}): {e}")
+            print(f"❌ Error Type: {type(e).__name__}")
+            if attempt == max_retries - 1:  # Last attempt
+                raise e
+    
+    return []  # Should not reach here
+
+
+def _parse_airbnb_properties(data):
+    """Parse tri_angle/new-fast-airbnb-scraper response data (new format)"""
+    properties = []
+    
+    try:
+        for item in data[:100]:  # Process all properties (max 100 due to scraper limit)
+            try:
+                # Extract basic info from new format
+                name = item.get('name', 'Unknown Property')
+                title = item.get('title', '')
+                
+                # Use title if more descriptive, otherwise use name
+                display_name = title if title and len(title) > len(name or '') else name
+                
+                # Extract price from new pricing object
+                pricing_data = item.get('pricing', {})
+                price_per_night = 0
+                
+                if isinstance(pricing_data, dict):
+                    # Extract from "€ 558 per night" format
+                    price_str = pricing_data.get('price', '€ 0')
+                    try:
+                        # Remove currency symbols and extract number
+                        price_clean = price_str.replace('€', '').replace('$', '').replace(',', '').replace('\xa0', '').strip()
+                        price_per_night = float(price_clean) if price_clean else 0
+                    except (ValueError, TypeError):
+                        price_per_night = 0
+                
+                # Extract rating from new rating object
+                rating_data = item.get('rating', {})
+                rating = 4.0  # Default rating
+                review_count = 0
+                
+                if isinstance(rating_data, dict):
+                    rating = rating_data.get('average', 4.0)
+                    review_count = rating_data.get('reviewsCount', 0)
+                
+                # Safe conversion
+                try:
+                    rating = float(rating) if rating is not None else 4.0
+                    review_count = int(review_count) if review_count is not None else 0
+                except (ValueError, TypeError):
+                    rating = 4.0
+                    review_count = 0
+                
+                # Extract property type from roomType
+                room_type = item.get('roomType', 'entire_home')
+                property_type_map = {
+                    'entire_home': 'Entire home',
+                    'private_room': 'Private room',
+                    'shared_room': 'Shared room',
+                    'hotel_room': 'Hotel room'
+                }
+                property_type = property_type_map.get(room_type, 'Entire home')
+                
+                # Extract location from coordinates or title
+                location = 'City Center'
+                if 'coordinates' in item and item['coordinates']:
+                    coords = item['coordinates']
+                    lat = coords.get('latitude', 0)
+                    lon = coords.get('longitude', 0)
+                    if lat and lon:
+                        location = f"Lat: {lat:.3f}, Lon: {lon:.3f}"
+                
+                # Extract capacity from subtitles (e.g., "3 queen beds")
+                subtitles = item.get('subtitles', [])
+                person_capacity = 2  # Default
+                
+                # Try to extract capacity from subtitles
+                for subtitle in subtitles:
+                    if 'bed' in subtitle.lower():
+                        try:
+                            # Extract number from "3 queen beds"
+                            import re
+                            numbers = re.findall(r'\d+', subtitle)
+                            if numbers:
+                                person_capacity = int(numbers[0]) * 2  # Assume 2 people per bed
+                                break
+                        except:
+                            pass
+                
+                # Extract URL
+                url = item.get('url', '')
+                
+                # Extract additional info
+                additional_info = item.get('additionalInfo', '')
+                badges = item.get('badges', [])
+                
+                # Create property object matching hotel format for consistency
+                property_obj = {
+                    'name': str(display_name)[:60] if display_name else 'Unknown Property',
+                    'price': int(price_per_night) if price_per_night > 0 else 0,
+                    'rating': round(float(rating), 1),
+                    'review_count': review_count,
+                    'location': location[:50],
+                    'property_type': str(property_type)[:30],
+                    'person_capacity': min(person_capacity, 12),  # Cap at 12 people
+                    'additional_info': additional_info,
+                    'badges': badges,
+                    'url': str(url)[:300] if url else '',
+                    'source': 'Airbnb',
+                    'type': 'airbnb',
+                    'stars': "⭐" * min(int(rating), 5)
+                }
+                
+                # Only add properties with valid data
+                if property_obj['price'] > 0 and property_obj['name'] != 'Unknown Property':
+                    properties.append(property_obj)
+                    print(f"  🏠 {property_obj['name'][:35]}: {property_obj['price']}€/night ⭐{property_obj['rating']} ({property_obj['property_type']})")
+                
+            except Exception as e:
+                print(f"⚠️ Error parsing Airbnb property: {e}")
+                continue
+    
+    except Exception as e:
+        print(f"❌ Airbnb Parser Error: {e}")
+    
+    # Sort by price-to-rating ratio (best value first)
+    if properties:
+        properties.sort(key=lambda p: p['price'] / max(p['rating'], 1))
+    return properties
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -506,7 +748,7 @@ async def check_api_health():
                 return {
                     "status": "healthy",
                     "message": f"Connected as {user_data.get('username', 'Unknown')}",
-                    "apis": ["jupri/skyscanner-flight", "voyager/booking-scraper"]
+                    "apis": ["jupri/skyscanner-flight", "voyager/fast-booking-scraper"]
                 }
             else:
                 return {"status": "error", "message": f"API returned {response.status_code}"}
@@ -527,6 +769,10 @@ if __name__ == "__main__":
         # Test hotel search  
         hotels = await search_hotels_apify("Rome", "2025-08-15", "2025-08-17")
         print(f"Hotel test: {len(hotels)} results")
+        
+        # Test Airbnb search
+        airbnb = await search_airbnb_apify("Rome", "2025-08-15", "2025-08-17", 2)
+        print(f"Airbnb test: {len(airbnb)} results")
         
         # Test API health
         health = await check_api_health()
