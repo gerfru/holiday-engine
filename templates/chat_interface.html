@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 AI Travel Assistant</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .chat-container {
+            width: 90%;
+            max-width: 800px;
+            height: 90vh;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .chat-header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+
+        .chat-header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f8f9fa;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: flex-start;
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message.bot {
+            justify-content: flex-start;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 15px 20px;
+            border-radius: 20px;
+            position: relative;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+
+        .message.bot .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e9ecef;
+            border-bottom-left-radius: 5px;
+        }
+
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            margin: 0 10px;
+        }
+
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            order: 1;
+        }
+
+        .message.bot .message-avatar {
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+        }
+
+        .chat-input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .chat-input-form {
+            display: flex;
+            gap: 10px;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e9ecef;
+            border-radius: 25px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .chat-input:focus {
+            border-color: #667eea;
+        }
+
+        .send-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            transition: transform 0.2s;
+        }
+
+        .send-button:hover {
+            transform: scale(1.05);
+        }
+
+        .send-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .typing-indicator {
+            display: none;
+            padding: 10px 20px;
+            color: #666;
+            font-style: italic;
+        }
+
+        .typing-indicator.show {
+            display: block;
+        }
+
+        .typing-dots {
+            display: inline-block;
+        }
+
+        .typing-dots span {
+            display: inline-block;
+            animation: typing 1.4s infinite ease-in-out;
+        }
+
+        .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes typing {
+            0%, 80%, 100% { 
+                transform: scale(0);
+                opacity: 0.5;
+            }
+            40% { 
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        .welcome-message {
+            text-align: center;
+            color: #666;
+            padding: 40px 20px;
+        }
+
+        .welcome-message h2 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .example-queries {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+
+        .example-query {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 20px;
+            padding: 10px 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+
+        .example-query:hover {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            transform: translateY(-2px);
+        }
+
+        .error-message {
+            background: #ffe6e6;
+            color: #d63031;
+            border: 1px solid #fab1a0;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .success-message {
+            background: #e8f5e8;
+            color: #00b894;
+            border: 1px solid #55a3ff;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>🤖 AI Travel Assistant</h1>
+            <p>Powered by OpenAI + Apify Scraper</p>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+            <div class="welcome-message">
+                <h2>👋 Willkommen!</h2>
+                <p>Ich bin dein AI-Reiseassistent. Frag mich einfach nach deiner Traumreise!</p>
+                
+                <div class="example-queries">
+                    <div class="example-query" onclick="sendExample('Romantische Reise nach Italien unter 1000€')">
+                        🌹 Romantische Reise nach Italien
+                    </div>
+                    <div class="example-query" onclick="sendExample('Familienurlaub in Spanien im Sommer')">
+                        👨‍👩‍👧‍👦 Familienurlaub in Spanien
+                    </div>
+                    <div class="example-query" onclick="sendExample('Günstige Flüge von Wien nach Málaga')">
+                        ✈️ Günstige Flüge nach Málaga
+                    </div>
+                    <div class="example-query" onclick="sendExample('Abenteuerreise nach Griechenland')">
+                        🏃‍♂️ Abenteuer in Griechenland
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="typing-indicator" id="typingIndicator">
+            🤖 AI denkt nach
+            <div class="typing-dots">
+                <span>.</span>
+                <span>.</span>
+                <span>.</span>
+            </div>
+        </div>
+
+        <div class="chat-input-container">
+            <form class="chat-input-form" onsubmit="sendMessage(event)">
+                <input 
+                    type="text" 
+                    class="chat-input" 
+                    id="messageInput" 
+                    placeholder="Frag mich nach deiner Traumreise..."
+                    maxlength="500"
+                >
+                <button type="submit" class="send-button" id="sendButton">
+                    ➤
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const chatMessages = document.getElementById('chatMessages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const typingIndicator = document.getElementById('typingIndicator');
+
+        function addMessage(content, isUser = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
+            
+            messageDiv.innerHTML = `
+                <div class="message-avatar">
+                    ${isUser ? '👤' : '🤖'}
+                </div>
+                <div class="message-content">
+                    ${content}
+                </div>
+            `;
+            
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function showTyping() {
+            typingIndicator.classList.add('show');
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function hideTyping() {
+            typingIndicator.classList.remove('show');
+        }
+
+        function formatResponse(data) {
+            if (data.error) {
+                return `<div class="error-message">❌ Fehler: ${data.error}</div>`;
+            }
+
+            if (data.success) {
+                let response = '<div class="success-message">✅ Reiseoptionen gefunden!</div>';
+                
+                // Query Analysis
+                if (data.query_analysis) {
+                    const analysis = data.query_analysis;
+                    response += `
+                        <h3>📝 Deine Anfrage:</h3>
+                        <ul>
+                            <li><strong>Ziel:</strong> ${analysis.destination || 'N/A'}</li>
+                            <li><strong>Budget:</strong> ${analysis.budget_max ? analysis.budget_max + '€' : 'Flexibel'}</li>
+                            <li><strong>Reisetyp:</strong> ${analysis.travel_type || 'N/A'}</li>
+                            <li><strong>Dauer:</strong> ${analysis.duration_days ? analysis.duration_days.join('-') + ' Tage' : 'N/A'}</li>
+                        </ul>
+                    `;
+                }
+
+                // Search Results
+                if (data.search_results) {
+                    const flights = data.search_results.flights || {};
+                    const hotels = data.search_results.hotels || [];
+                    
+                    response += `
+                        <h3>🔍 Suchergebnisse:</h3>
+                        <ul>
+                            <li><strong>Hinflüge:</strong> ${flights.outbound ? flights.outbound.length : 0}</li>
+                            <li><strong>Rückflüge:</strong> ${flights.inbound ? flights.inbound.length : 0}</li>
+                            <li><strong>Hotels:</strong> ${hotels.length}</li>
+                        </ul>
+                    `;
+
+                    if (hotels.length > 0) {
+                        response += `<p><strong>Top Hotel:</strong> ${hotels[0].name || 'N/A'}</p>`;
+                    }
+                }
+
+                // AI Recommendations
+                if (data.ai_recommendations) {
+                    response += `
+                        <h3>💡 AI-Empfehlungen:</h3>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 10px 0;">
+                            ${data.ai_recommendations.substring(0, 500)}...
+                        </div>
+                    `;
+                }
+
+                return response;
+            }
+
+            return 'Unbekannte Antwort erhalten.';
+        }
+
+        async function sendMessage(event) {
+            event.preventDefault();
+            
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            // Add user message
+            addMessage(message, true);
+            messageInput.value = '';
+            
+            // Show typing indicator
+            showTyping();
+            sendButton.disabled = true;
+
+            try {
+                const response = await fetch('/ai-search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: message,
+                        origin: 'Wien'
+                    })
+                });
+
+                const data = await response.json();
+                
+                // Hide typing and add bot response
+                hideTyping();
+                addMessage(formatResponse(data));
+                
+            } catch (error) {
+                hideTyping();
+                addMessage(`<div class="error-message">❌ Verbindungsfehler: ${error.message}</div>`);
+            }
+
+            sendButton.disabled = false;
+            messageInput.focus();
+        }
+
+        function sendExample(query) {
+            messageInput.value = query;
+            sendMessage(new Event('submit'));
+        }
+
+        // Auto-focus input
+        messageInput.focus();
+    </script>
+</body>
+</html>
