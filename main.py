@@ -125,13 +125,13 @@ async def enhanced_search_endpoint(request: StandardSearchRequest) -> Dict[str, 
             flights = flight_results
         
         hotels = await hotel_service.search_hotels(
-            destination=request.destination,
-            check_in=request.outbound_date,
-            check_out=request.return_date
+            city=request.destination,
+            checkin=request.outbound_date,
+            checkout=request.return_date
         )
         
         # Deine bestehende Combination Logic
-        combinations = await combination_engine.create_combinations(flights, hotels)
+        combinations = combination_engine.create_combinations(flights, hotels)
         
         # Zusätzliche Metadaten für MCP
         mcp_metadata = {
@@ -253,13 +253,30 @@ async def city_autocomplete(q: str):
         if result and isinstance(result, tuple) and result[0]:
             iata_code = result[0]  # Erster Wert ist IATA
             city_name = result[1]  # Zweiter Wert ist Name
-            return [{
-                "name": city_name, 
-                "iata_code": iata_code, 
-                "display_name": f"{city_name} ({iata_code})"
+            suggestions = result[2] if len(result) > 2 else []  # Dritter Wert sind Suggestions
+            
+            # Format für old interface
+            formatted_suggestions = [{
+                "city": city_name,
+                "country": "Unknown",  # Could be enhanced with country detection
+                "country_code": iata_code[:2] if iata_code else "",
+                "type": "Airport",
+                "iata_code": iata_code
             }]
+            
+            # Add additional suggestions if available
+            for suggestion in suggestions[:5]:
+                formatted_suggestions.append({
+                    "city": suggestion,
+                    "country": "Unknown",
+                    "country_code": "",
+                    "type": "City",
+                    "iata_code": ""
+                })
+            
+            return {"suggestions": formatted_suggestions}
         else:
-            return []
+            return {"suggestions": []}
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"City Autocomplete Fehler: {str(e)}")
@@ -290,6 +307,63 @@ async def resolve_city(city: str):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"City Resolver Fehler: {str(e)}")
+
+
+# === WEB FORM ENDPOINTS ===
+
+@app.post("/smart-search")
+async def smart_search_form(request: Request):
+    """
+    Handle form submission from old interface (index.html)
+    """
+    try:
+        # Get form data
+        form_data = await request.form()
+        
+        # Create search request from form data
+        search_request = StandardSearchRequest(
+            origin=form_data.get("origin", ""),
+            destination=form_data.get("destination", ""),
+            outbound_date=form_data.get("outbound_date", ""),
+            return_date=form_data.get("return_date", "")
+        )
+        
+        # Use existing search logic
+        search_results = await enhanced_search_endpoint(search_request)
+        
+        # Render results template
+        if WEB_UI_AVAILABLE:
+            return templates.TemplateResponse("results.html", {
+                "request": request,
+                "results": search_results,
+                "search_params": {
+                    "origin": search_request.origin,
+                    "destination": search_request.destination,
+                    "outbound_date": search_request.outbound_date,
+                    "return_date": search_request.return_date
+                }
+            })
+        else:
+            # Return JSON if no templates
+            return search_results
+            
+    except Exception as e:
+        if WEB_UI_AVAILABLE:
+            return templates.TemplateResponse("error.html", {
+                "request": request,
+                "error": str(e)
+            })
+        else:
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/")
+async def home_page(request: Request):
+    """Serve the main search interface"""
+    if WEB_UI_AVAILABLE:
+        return templates.TemplateResponse("index.html", {"request": request})
+    else:
+        return {"message": "Holiday Engine API", "docs": "/docs"}
 
 
 # === STARTUP EVENT ===

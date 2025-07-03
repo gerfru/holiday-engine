@@ -70,12 +70,16 @@ class HolidayEngineMCPClient:
             
             # 3. Rufe deine Holiday Engine auf
             print(f"🔍 Suche in Holiday Engine: {origin} → {destination}")
+            print(f"📡 Verbinde zu Backend: {self.base_url}")
             search_results = await self.call_standard_search(origin, destination, check_in, check_out)
             
+            # 4. Falls Backend nicht verfügbar, nutze Demo-Daten
             if "error" in search_results:
-                return search_results
+                print(f"⚠️ Backend-Fehler: {search_results.get('error', 'Unbekannter Fehler')}")
+                print("⚠️ Backend nicht verfügbar, nutze Demo-Daten für OpenAI-Test")
+                search_results = self._generate_demo_search_results(query_analysis, origin, destination)
             
-            # 4. OpenAI generiert intelligente Empfehlungen
+            # 5. OpenAI generiert intelligente Empfehlungen
             print("💡 Generiere Empfehlungen mit OpenAI...")
             recommendations = await self.llm_service.generate_travel_recommendations(
                 {"search_results": [{"combinations": [{"flight": search_results.get("flights", [{}])[0] if search_results.get("flights") else {}, 
@@ -84,7 +88,7 @@ class HolidayEngineMCPClient:
                 query_analysis
             )
             
-            # 5. Optional: Optimierungsvorschläge
+            # 6. Optional: Optimierungsvorschläge
             optimizations = await self.llm_service.optimize_search_parameters(query, search_results)
             
             return {
@@ -93,7 +97,8 @@ class HolidayEngineMCPClient:
                 "ai_recommendations": recommendations,
                 "optimizations": optimizations,
                 "llm_used": "OpenAI GPT-4",
-                "success": True
+                "success": True,
+                "demo_mode": "error" in search_results
             }
             
         except Exception as e:
@@ -113,31 +118,52 @@ class HolidayEngineMCPClient:
         
         try:
             # Erst City Resolution
+            print(f"🌍 Teste City Resolution: {self.base_url}/api/cities/resolve?city={destination}")
             city_response = await self.client.get(
                 f"{self.base_url}/api/cities/resolve",
                 params={"city": destination}
             )
             
+            print(f"📊 City Response Status: {city_response.status_code}")
+            
             if city_response.status_code == 200:
                 city_data = city_response.json()
+                print(f"✅ City Resolution erfolgreich: {city_data}")
                 
                 # Dann Standard-Suche
+                search_payload = {
+                    "origin": origin,
+                    "destination": city_data.get("airport_code", destination),
+                    "outbound_date": outbound_date,
+                    "return_date": return_date
+                }
+                print(f"🔎 Starte Suche mit: {search_payload}")
+                
                 search_response = await self.client.post(
                     f"{self.base_url}/api/search",
-                    json={
-                        "origin": origin,
-                        "destination": city_data.get("airport_code", destination),
-                        "outbound_date": outbound_date,
-                        "return_date": return_date
-                    }
+                    json=search_payload
                 )
                 
+                print(f"📊 Search Response Status: {search_response.status_code}")
+                
                 if search_response.status_code == 200:
-                    return search_response.json()
+                    result = search_response.json()
+                    print(f"✅ Suche erfolgreich: {len(result.get('flights', []))} Flüge, {len(result.get('hotels', []))} Hotels")
+                    return result
+                else:
+                    error_text = search_response.text
+                    print(f"❌ Search failed with status {search_response.status_code}: {error_text}")
+                    return {"error": f"Search failed with status {search_response.status_code}: {error_text}"}
+            else:
+                error_text = city_response.text
+                print(f"❌ City Resolution failed with status {city_response.status_code}: {error_text}")
+                return {"error": f"City resolution failed with status {city_response.status_code}: {error_text}"}
             
-            return {"error": "Search failed"}
-            
+        except httpx.ConnectError as e:
+            print(f"🔌 Connection Error: {e}")
+            return {"error": "Backend API not available. Please start the main server on port 8000 first."}
         except Exception as e:
+            print(f"💥 General Error: {e}")
             return {"error": f"Search error: {str(e)}"}
     
     async def call_standard_search_fallback(self, query: str, origin: str) -> Dict[str, Any]:
@@ -167,6 +193,75 @@ class HolidayEngineMCPClient:
             results["note"] = "Suchergebnisse ohne LLM-Analyse - für intelligente Empfehlungen OpenAI API Key setzen"
         
         return results
+    
+    def _generate_demo_search_results(self, query_analysis: Dict[str, Any], origin: str, destination: str) -> Dict[str, Any]:
+        """Generiert Demo-Suchergebnisse für OpenAI-Tests wenn Backend nicht verfügbar"""
+        
+        budget = query_analysis.get("budget_max", 1000)
+        travel_type = query_analysis.get("travel_type", "leisure")
+        
+        # Demo-Flugdaten
+        demo_flights = [
+            {
+                "airline": "Austrian Airlines",
+                "price_eur": 280,
+                "departure_time": "08:15",
+                "arrival_time": "10:45",
+                "stops": 0,
+                "duration": "2h 30m"
+            },
+            {
+                "airline": "Lufthansa",
+                "price_eur": 320,
+                "departure_time": "14:20",
+                "arrival_time": "16:50",
+                "stops": 0,
+                "duration": "2h 30m"
+            }
+        ]
+        
+        # Demo-Hotel-Daten basierend auf Reisetyp
+        if travel_type == "romantic":
+            demo_hotels = [
+                {
+                    "name": "Grand Hotel Romance",
+                    "rating": 4.8,
+                    "price_per_night": 180,
+                    "location": f"Zentrum {destination}",
+                    "accommodation_type": "hotel"
+                },
+                {
+                    "name": "Boutique Love Hotel",
+                    "rating": 4.5,
+                    "price_per_night": 150,
+                    "location": f"Altstadt {destination}",
+                    "accommodation_type": "hotel"
+                }
+            ]
+        else:
+            demo_hotels = [
+                {
+                    "name": f"Hotel {destination} Center",
+                    "rating": 4.2,
+                    "price_per_night": 120,
+                    "location": f"Zentrum {destination}",
+                    "accommodation_type": "hotel"
+                },
+                {
+                    "name": f"Budget Inn {destination}",
+                    "rating": 3.8,
+                    "price_per_night": 80,
+                    "location": f"Nähe Flughafen {destination}",
+                    "accommodation_type": "hotel"
+                }
+            ]
+        
+        return {
+            "flights": demo_flights,
+            "hotels": demo_hotels,
+            "demo_mode": True,
+            "note": "Demo-Daten - für echte Suchergebnisse starte den Backend-Server auf Port 8000"
+        }
 
 # Globaler Client
 holiday_client = HolidayEngineMCPClient()

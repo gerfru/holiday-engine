@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import json
 
-from .city_resolver import CityResolver
+from .city_resolver import CityResolverService
 from .flight_service import FlightService  
 from .hotel_service import HotelService
 from ..business_logic import TravelCombinationEngine
@@ -22,7 +22,7 @@ class IntelligentSearchService:
     """Service für intelligente, LLM-gestützte Reisesuche"""
     
     def __init__(self):
-        self.city_resolver = CityResolver()
+        self.city_resolver = CityResolverService()
         self.flight_service = FlightService()
         self.hotel_service = HotelService()
         self.combination_engine = TravelCombinationEngine()
@@ -200,15 +200,22 @@ class IntelligentSearchService:
         
         try:
             # Dein bestehender Service
-            resolved = await self.city_resolver.resolve_city(destination)
-            return resolved
+            iata_code, city_name, suggestions = await self.city_resolver.resolve_to_iata(destination)
+            return {
+                "city": city_name,
+                "country": "Unknown",
+                "airport_code": iata_code,
+                "coordinates": None,
+                "suggestions": suggestions
+            }
         except Exception as e:
             # Fallback
             return {
                 "city": destination,
                 "country": "Unknown",
                 "airport_code": destination[:3].upper(),
-                "coordinates": None
+                "coordinates": None,
+                "suggestions": []
             }
     
     async def _optimize_travel_dates(self, destination_info: Dict, parsed_query: Dict) -> List[Dict]:
@@ -396,22 +403,28 @@ class IntelligentSearchService:
             try:
                 # Parallel: Flüge und Hotels suchen
                 flights, hotels = await asyncio.gather(
-                    self.flight_service.search_flights(
+                    self.flight_service.search_round_trip(
                         origin=origin,
                         destination=destination_info.get("airport_code", destination_info["city"]),
-                        outbound_date=date_option["check_in"],
+                        departure_date=date_option["check_in"],
                         return_date=date_option["check_out"]
                     ),
                     self.hotel_service.search_hotels(
-                        destination=destination_info["city"],
-                        check_in=date_option["check_in"],
-                        check_out=date_option["check_out"]
+                        city=destination_info["city"],
+                        checkin=date_option["check_in"],
+                        checkout=date_option["check_out"]
                     )
                 )
                 
+                # Process flight results (round_trip returns dict with outbound/inbound)
+                if isinstance(flights, dict):
+                    flight_list = flights.get('outbound', []) + flights.get('inbound', [])
+                else:
+                    flight_list = flights
+                
                 # Nutze deine bestehende Combination Logic
-                combinations = await self.combination_engine.generate_combinations(
-                    flights, hotels, parsed_query.get("budget_max")
+                combinations = self.combination_engine.create_combinations(
+                    flight_list, hotels, parsed_query.get("budget_max")
                 )
                 
                 all_results.append({

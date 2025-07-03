@@ -12,31 +12,36 @@ class TravelCombinationEngine:
     
     def create_combinations(
         self,
-        outbound_flights: List[Dict[str, Any]],
-        return_flights: List[Dict[str, Any]],
+        flights: List[Dict[str, Any]],
         hotels: List[Dict[str, Any]],
-        airbnb_properties: List[Dict[str, Any]],
-        search_params: Dict[str, Any]
+        budget: Optional[int] = None,
+        search_params: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Create optimized flight + accommodation combinations
         
         Args:
-            outbound_flights: List of outbound flight options
-            return_flights: List of return flight options 
+            flights: List of flight options (can be round-trip or one-way)
             hotels: List of hotel options
-            airbnb_properties: List of Airbnb options
-            search_params: Search parameters including nights, persons, budget
+            budget: Optional budget constraint in EUR
+            search_params: Optional search parameters including nights, persons, etc.
             
         Returns:
             List of optimized combinations sorted by score
         """
         logger.info("Creating travel combinations...")
         
-        # Prepare accommodation options
-        all_accommodations = self._prepare_accommodations(hotels, airbnb_properties)
+        # Default parameters
+        if search_params is None:
+            search_params = {}
         
-        if not outbound_flights or not return_flights:
+        nights = search_params.get('nights', 7)
+        persons = search_params.get('persons', 2)
+        
+        # Prepare accommodation options (hotels only for now)
+        all_accommodations = self._prepare_accommodations(hotels, [])
+        
+        if not flights:
             logger.warning("No flights available for combinations")
             return []
         
@@ -46,22 +51,17 @@ class TravelCombinationEngine:
         
         # Generate combinations
         combinations = []
-        nights = search_params['nights']
-        persons = search_params['persons']
-        budget = search_params.get('budget')
         
         # Limit options for performance (top 3 of each)
-        for outbound in outbound_flights[:3]:
-            for return_flight in return_flights[:3]:
-                for accommodation in all_accommodations:
-                    
-                    combination = self._create_single_combination(
-                        outbound, return_flight, accommodation, 
-                        nights, persons, budget
-                    )
-                    
-                    if combination:  # Only add valid combinations
-                        combinations.append(combination)
+        for flight in flights[:3]:
+            for accommodation in all_accommodations:
+                
+                combination = self._create_single_combination_simple(
+                    flight, accommodation, nights, persons, budget
+                )
+                
+                if combination:  # Only add valid combinations
+                    combinations.append(combination)
         
         # Sort by score and return top combinations
         combinations.sort(key=lambda x: x['score'], reverse=True)
@@ -91,6 +91,57 @@ class TravelCombinationEngine:
             accommodations.append(airbnb_copy)
         
         return accommodations
+    
+    def _create_single_combination_simple(
+        self,
+        flight: Dict[str, Any],
+        accommodation: Dict[str, Any],
+        nights: int,
+        persons: int,
+        budget: Optional[int]
+    ) -> Optional[Dict[str, Any]]:
+        """Create a single travel combination with simplified flight handling"""
+        
+        try:
+            # Calculate flight costs (multiply by persons)
+            flight_cost = flight.get('price_eur', flight.get('price', 0)) * persons
+            
+            # Calculate accommodation cost
+            accommodation_cost = accommodation.get('price_per_night', accommodation.get('price', 0)) * nights
+            
+            # Calculate total cost
+            total_cost = flight_cost + accommodation_cost
+            
+            # Budget filter (allow 20% over budget for flexibility)
+            if budget and total_cost > budget * 1.2:
+                return None
+            
+            # Calculate score
+            score = self._calculate_combination_score(
+                total_cost, accommodation.get('rating', 3.0), budget
+            )
+            
+            combination = {
+                'flight': flight,
+                'hotel': accommodation,
+                'accommodation_type': accommodation.get('accommodation_type', 'hotel'),
+                'flight_cost': flight_cost,
+                'accommodation_cost': accommodation_cost,
+                'total_price': total_cost,
+                'nights': nights,
+                'persons': persons,
+                'score': score,
+                'cost_per_person': total_cost / persons,
+                'cost_per_night': total_cost / nights if nights > 0 else total_cost,
+                'recommendation_reason': f"Good value at €{total_cost} for {persons} person(s)"
+            }
+            
+            logger.debug(f"Created combination: €{total_cost} total (score: {score})")
+            return combination
+            
+        except Exception as e:
+            logger.warning(f"Error creating combination: {e}")
+            return None
     
     def _create_single_combination(
         self,
