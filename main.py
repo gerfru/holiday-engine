@@ -1,100 +1,239 @@
-# main.py - Clean FastAPI Travel App
-from fastapi import FastAPI, Request, Form
-from typing import Optional
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-import asyncio
+# main.py - Complete FastAPI Application with Live Autocomplete
+import sys
 import os
-import csv
-import json
-from datetime import datetime, timedelta
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import APIs and simplified city resolver
-from travel_api import search_flights_apify, search_hotels_apify, search_airbnb_apify
-from smart_city_lookup_simple import hybrid_city_to_iata
-from smart_search_with_progress import smart_search_with_progress
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from typing import Optional
+import asyncio
+import logging
+import httpx
+from datetime import datetime
 
-# FastAPI Setup
-app = FastAPI(title="Travel Comparison Platform")
+# Import refactored services
+from config.settings import settings
+from utils.api_client import create_apify_client, ApiClientError
+from services.flight_service import FlightService
+from services.hotel_service import AccommodationService
+from services.city_resolver import CityResolverService
+from business_logic import TravelCombinationEngine, export_search_results
 
-# Templates setup
+# Setup
+logger = logging.getLogger(__name__)
+app = FastAPI(
+    title="Holiday Engine",
+    description="Intelligent Travel Search & Comparison Platform",
+    version="2.0.0",
+    debug=settings.debug
+)
+
+# Templates
 templates = Jinja2Templates(directory="templates")
 
-# Global progress tracking
-search_progress = {}
-search_results = {}  # Store search results by search_id
+# Initialize services
+api_client = create_apify_client(
+    api_token=settings.apify_token,
+    max_retries=settings.max_retries,
+    base_delay=settings.base_retry_delay,
+    max_delay=settings.max_retry_delay,
+    timeout=settings.api_timeout
+)
 
-# Health check
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "service": "travel-platform"}
+flight_service = FlightService(api_client)
+accommodation_service = AccommodationService(api_client)
+combination_engine = TravelCombinationEngine()
+city_resolver = CityResolverService()
 
-# Main page
+# Routes
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    """Hauptseite - lädt HTML Template"""
+    """Main search page"""
     return templates.TemplateResponse("index.html", {"request": request})
 
-# Progress tracking functions
-def update_search_progress(search_id: str, step: str, message: str = None, progress: int = None, results: dict = None, redirect_url: str = None):
-    """Update search progress for a given search ID"""
-    if search_id not in search_progress:
-        search_progress[search_id] = {"status": "started", "step": "initialized"}
-    
-    search_progress[search_id].update({
-        "step": step,
-        "message": message,
-        "progress": progress,
-        "results": results,
-        "redirect_url": redirect_url,
-        "timestamp": datetime.now().isoformat()
-    })
-
-async def generate_progress_stream(search_id: str):
-    """Generate Server-Sent Events stream for search progress"""
-    while search_id not in search_progress:
-        await asyncio.sleep(0.1)
-    
-    last_update = None
-    while True:
-        current_progress = search_progress.get(search_id, {})
-        
-        # Only send update if something changed
-        if current_progress != last_update:
-            data = json.dumps(current_progress)
-            yield f"data: {data}\n\n"
-            last_update = current_progress.copy()
-            
-            # Stop streaming if search is completed
-            if current_progress.get("redirect_url"):
-                break
-        
-        await asyncio.sleep(0.5)  # Check every 500ms
-
-@app.get("/search-progress/{search_id}")
-async def search_progress_stream(search_id: str):
-    """Server-Sent Events endpoint for search progress"""
-    return StreamingResponse(
-        generate_progress_stream(search_id),
-        media_type="text/plain",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Content-Type": "text/event-stream",
+@app.get("/health")
+async def health_check():
+    """Application health check"""
+    try:
+        api_health = await api_client.health_check()
+        return {
+            "status": "healthy",
+            "version": "2.0.0",
+            "debug": settings.debug,
+            "api_status": api_health["status"],
+            "services": {
+                "flight_service": "active",
+                "accommodation_service": "active", 
+                "combination_engine": "active",
+                "city_resolver": "active"
+            }
         }
-    )
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }
 
-@app.get("/search-with-progress", response_class=HTMLResponse)
-async def search_with_progress_page(request: Request, search_id: str = None):
-    """Show search progress page"""
-    return templates.TemplateResponse("search_with_progress.html", {
-        "request": request,
-        "search_id": search_id
-    })
+# Live Autocomplete APIs
+@app.get("/api/cities/autocomplete")
+async def city_autocomplete(q: str = ""):
+    """
+    Live city autocomplete using OpenStreetMap Nominatim
+    
+    Args:
+        q: Query string (e.g., "Mala" for "Malaga")
+        
+    Returns:
+        List of city suggestions with coordinates
+    """
+    if not q or len(q) < 2:
+        return {"suggestions": []}
+    
+    try:
+        logger.info(f"Autocomplete search: '{q}'")
+        
+        # Call Nominatim API
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            "q": q,
+            "format": "json",
+            "addressdetails": 1,
+            "limit": 8,  # More results for better selection
+            "accept-language": "de,en",  # Prefer German, fallback English
+            "featuretype": "city"  # Focus on cities
+        }
+        
+        headers = {
+            "User-Agent": "HolidayEngine/2.0 (travel-search-platform)"
+        }
+        
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url, params=params, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                logger.info(f"DEBUG: Raw Nominatim data for '{q}':")
+                for i, item in enumerate(data[:3]):  # Erste 3 Ergebnisse
+                    logger.info(f"  Result {i}: type='{item.get('type')}', class='{item.get('class')}', name='{item.get('name')}'")
 
-@app.post("/search-with-progress")
-async def start_search_with_progress(
+                # Filter and format results
+                suggestions = []
+                seen_cities = set()  # Avoid duplicates
+                
+                for item in data:
+                    # Extract city information
+                    display_name = item.get("display_name", "")
+                    place_type = item.get("type", "")
+                    place_class = item.get("class", "")
+                    
+                    # EXPANDED: Include more place types
+                    valid_types = [
+                        "city", "town", "village", "municipality",
+                        "administrative",  # ✅ For places like Schladming
+                        "hamlet", "suburb", "quarter", "neighbourhood"
+                    ]
+                    
+                    # Also check if it's a place class (boundary, place, etc.)
+                    valid_classes = ["place", "boundary"]
+                    
+                    # Include if type OR class is valid
+                    if place_type not in valid_types and place_class not in valid_classes:
+                        continue
+                    
+                    # Extract clean city name from address
+                    address = item.get("address", {})
+                    city_name = (
+                        address.get("city") or 
+                        address.get("town") or 
+                        address.get("village") or
+                        address.get("municipality") or
+                        address.get("hamlet") or  # ✅ Small places
+                        item.get("name", "")
+                    )
+                    
+                    if not city_name or city_name.lower() in seen_cities:
+                        continue
+                    
+                    seen_cities.add(city_name.lower())
+                    
+                    # Get country for context
+                    country = address.get("country", "")
+                    country_code = address.get("country_code", "").upper()
+                    
+                    # Create suggestion
+                    suggestion = {
+                        "city": city_name,
+                        "country": country,
+                        "country_code": country_code,
+                        "display_name": f"{city_name}, {country}" if country else city_name,
+                        "lat": float(item.get("lat", 0)),
+                        "lon": float(item.get("lon", 0)),
+                        "importance": item.get("importance", 0),  # OSM importance score
+                        "type": place_type
+                    }
+                    
+                    suggestions.append(suggestion)
+                
+                # Sort by importance (OSM's relevance score)
+                suggestions.sort(key=lambda x: x["importance"], reverse=True)
+                
+                logger.info(f"Found {len(suggestions)} city suggestions for '{q}'")
+                return {"suggestions": suggestions[:6]}  # Return top 6
+            
+            else:
+                logger.warning(f"Nominatim API error: {response.status_code}")
+                return {"suggestions": [], "error": "Search service unavailable"}
+        
+    except asyncio.TimeoutError:
+        logger.warning(f"Autocomplete timeout for query: '{q}'")
+        return {"suggestions": [], "error": "Search timeout"}
+        
+    except Exception as e:
+        logger.error(f"Autocomplete error for '{q}': {e}")
+        return {"suggestions": [], "error": "Search failed"}
+
+@app.get("/api/cities/resolve")
+async def resolve_city_to_airport(city: str = ""):
+    """
+    Resolve a city name to nearest airport IATA code
+    
+    Args:
+        city: City name to resolve
+        
+    Returns:
+        Airport information or error
+    """
+    if not city:
+        return {"error": "City name required"}
+    
+    try:
+        # Use your existing city resolver
+        iata, resolved_city, suggestions = await city_resolver.resolve_to_iata(city)
+        
+        if iata:
+            return {
+                "success": True,
+                "iata": iata,
+                "city": resolved_city,
+                "original_query": city
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Could not find airport for '{city}'",
+                "suggestions": suggestions,
+                "original_query": city
+            }
+    
+    except Exception as e:
+        logger.error(f"City resolution error: {e}")
+        return {"error": "Resolution failed"}
+
+@app.post("/smart-search")
+async def smart_search(
     request: Request,
     origin: str = Form(...),
     destination: str = Form(...),
@@ -103,60 +242,231 @@ async def start_search_with_progress(
     budget: Optional[str] = Form(None),
     persons: int = Form(2)
 ):
-    """Start search with progress tracking"""
-    import uuid
-    search_id = str(uuid.uuid4())[:8]
-    
-    # Create progress callback
-    def progress_callback(step: str, message: str = None, progress: int = None, results: dict = None):
-        update_search_progress(search_id, step, message, progress, results)
-    
-    # Start background search task
-    async def background_search():
-        try:
-            result = await smart_search_with_progress(
-                origin, destination, departure, return_date, budget, persons, progress_callback
-            )
-            
-            if result.get('success'):
-                # Store results
-                search_results[search_id] = result['results']
-                # Set redirect URL to results page
-                update_search_progress(
-                    search_id, 'completed', 'Suche abgeschlossen!', 100, 
-                    result['summary'], f'/results/{search_id}'
-                )
-            else:
-                # Handle error
-                update_search_progress(
-                    search_id, 'error', f"Fehler: {result.get('error', 'Unbekannter Fehler')}", 0
-                )
+    """
+    Smart travel search with improved error handling and structure
+    """
+    try:
+        # Validate and process inputs
+        search_params = await _validate_search_params(
+            origin, destination, departure, return_date, budget, persons
+        )
         
-        except Exception as e:
-            update_search_progress(
-                search_id, 'error', f"Fehler: {str(e)[:50]}...", 0
-            )
-    
-    # Start background task
-    asyncio.create_task(background_search())
-    
-    # Redirect to progress page
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=f"/search-with-progress?search_id={search_id}", status_code=302)
+        logger.info(f"Starting smart search: {search_params}")
+        
+        # Step 1: Resolve cities to IATA codes
+        origin_info, dest_info = await _resolve_cities(origin, destination)
+        
+        # Step 2: Search flights and accommodations concurrently
+        search_results = await _perform_concurrent_search(
+            origin_info, dest_info, search_params
+        )
+        
+        # Step 3: Create intelligent combinations
+        combinations = combination_engine.create_combinations(
+            outbound_flights=search_results['flights']['outbound'],
+            return_flights=search_results['flights']['return'],
+            hotels=search_results['accommodations']['hotels'],
+            airbnb_properties=search_results['accommodations']['airbnb'],
+            search_params=search_params
+        )
+        
+        # Step 4: Export results (if enabled)
+        if settings.export_csv:
+            await export_search_results(search_results, search_params)
+        
+        # Step 5: Render results
+        return templates.TemplateResponse("results.html", {
+            "request": request,
+            "combinations": combinations,
+            "outbound_flights": search_results['flights']['outbound'],
+            "return_flights": search_results['flights']['return'],
+            "hotels": search_results['accommodations']['hotels'],
+            "airbnb_properties": search_results['accommodations']['airbnb'],
+            "origin": f"{origin_info['city']} ({origin_info['iata']})",
+            "destination": f"{dest_info['city']} ({dest_info['iata']})",
+            "origin_iata": origin_info['iata'],
+            "dest_iata": dest_info['iata'],
+            "departure": search_params['departure'],
+            "return_date": search_params['return_date'],
+            "checkin": search_params['departure'],
+            "checkout": search_params['return_date'],
+            "nights": search_params['nights'],
+            "budget": search_params['budget'],
+            "persons": search_params['persons']
+        })
+        
+    except ValidationError as e:
+        logger.warning(f"Validation error: {e}")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": str(e)
+        })
+        
+    except ApiClientError as e:
+        logger.error(f"API error: {e}")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": "Search service temporarily unavailable. Please try again later."
+        })
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in smart search: {e}")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": "An unexpected error occurred. Please try again."
+        })
 
-# Simple flight search (for testing)
+# Helper functions
+async def _validate_search_params(
+    origin: str, 
+    destination: str, 
+    departure: str, 
+    return_date: str, 
+    budget: Optional[str], 
+    persons: int
+) -> dict:
+    """Validate and process search parameters"""
+    
+    # Validate persons
+    if not 1 <= persons <= 10:
+        raise ValidationError("Number of persons must be between 1 and 10")
+    
+    # Validate dates
+    try:
+        departure_date = datetime.strptime(departure, '%Y-%m-%d').date()
+        return_date_obj = datetime.strptime(return_date, '%Y-%m-%d').date()
+        
+        if departure_date >= return_date_obj:
+            raise ValidationError("Return date must be after departure date")
+        
+        if departure_date < datetime.now().date():
+            raise ValidationError("Departure date must be in the future")
+        
+        nights = (return_date_obj - departure_date).days
+        if nights > 30:
+            raise ValidationError("Maximum trip duration is 30 days")
+            
+    except ValueError:
+        raise ValidationError("Invalid date format. Use YYYY-MM-DD")
+    
+    # Process budget
+    budget_int = None
+    if budget and budget.strip():
+        try:
+            budget_int = int(budget)
+            if budget_int < 50:
+                raise ValidationError("Budget must be at least €50")
+        except ValueError:
+            raise ValidationError("Budget must be a valid number")
+    
+    return {
+        'origin': origin.strip(),
+        'destination': destination.strip(),
+        'departure': departure,
+        'return_date': return_date,
+        'budget': budget_int,
+        'persons': persons,
+        'nights': nights
+    }
+
+async def _resolve_cities(origin: str, destination: str) -> tuple:
+    """Resolve city names to IATA codes"""
+    
+    logger.info(f"Resolving cities: {origin} → {destination}")
+    
+    # Resolve origin
+    origin_iata, origin_city, origin_suggestions = await city_resolver.resolve_to_iata(origin)
+    if not origin_iata:
+        suggestions_text = ', '.join(origin_suggestions[:3]) if origin_suggestions else 'None'
+        raise ValidationError(f"Origin city '{origin}' not found. Suggestions: {suggestions_text}")
+    
+    # Resolve destination  
+    dest_iata, dest_city, dest_suggestions = await city_resolver.resolve_to_iata(destination)
+    if not dest_iata:
+        suggestions_text = ', '.join(dest_suggestions[:3]) if dest_suggestions else 'None'
+        raise ValidationError(f"Destination city '{destination}' not found. Suggestions: {suggestions_text}")
+    
+    if origin_iata == dest_iata:
+        raise ValidationError("Origin and destination cannot be the same")
+    
+    logger.info(f"Resolved: {origin} → {origin_iata}, {destination} → {dest_iata}")
+    
+    return (
+        {'iata': origin_iata, 'city': origin_city},
+        {'iata': dest_iata, 'city': dest_city}
+    )
+
+async def _perform_concurrent_search(origin_info: dict, dest_info: dict, search_params: dict) -> dict:
+    """Perform all searches concurrently"""
+    
+    logger.info("Starting concurrent search for flights and accommodations")
+    
+    # Create search tasks
+    flight_task = flight_service.search_round_trip(
+        origin=origin_info['iata'],
+        destination=dest_info['iata'],
+        departure_date=search_params['departure'],
+        return_date=search_params['return_date'],
+        max_results_per_direction=settings.max_flights_per_search // 2
+    )
+    
+    accommodation_task = accommodation_service.search_all_accommodations(
+        city=search_params['destination'],  # ✅ Use original destination for hotels!
+        checkin=search_params['departure'],
+        checkout=search_params['return_date'],
+        guests=search_params['persons'],
+        max_hotels=settings.max_hotels_per_search,
+        max_airbnb=settings.max_airbnb_per_search
+    )
+    
+    # Execute concurrently
+    try:
+        flights, accommodations = await asyncio.gather(
+            flight_task,
+            accommodation_task,
+            return_exceptions=True
+        )
+        
+        # Handle exceptions
+        if isinstance(flights, Exception):
+            logger.error(f"Flight search failed: {flights}")
+            flights = {'outbound': [], 'return': []}
+        
+        if isinstance(accommodations, Exception):
+            logger.error(f"Accommodation search failed: {accommodations}")
+            accommodations = {'hotels': [], 'airbnb': []}
+        
+        # Validate we have some results
+        total_flights = len(flights['outbound']) + len(flights['return'])
+        total_accommodations = len(accommodations['hotels']) + len(accommodations['airbnb'])
+        
+        if total_flights == 0:
+            raise ValidationError(f"No flights found for {origin_info['city']} ↔ {dest_info['city']} on selected dates")
+        
+        if total_accommodations == 0:
+            raise ValidationError(f"No accommodations found in {dest_info['city']} for selected dates")
+        
+        logger.info(f"Search completed: {total_flights} flights, {total_accommodations} accommodations")
+        
+        return {
+            'flights': flights,
+            'accommodations': accommodations
+        }
+        
+    except Exception as e:
+        logger.error(f"Concurrent search failed: {e}")
+        raise
+
+# Test endpoints
 @app.post("/test-flights")
 async def test_flights(
     origin: str = Form("VIE"),
-    destination: str = Form("BCN"), 
+    destination: str = Form("BCN"),
     date: str = Form("2025-08-15")
 ):
-    """Simple test endpoint"""
+    """Simple flight test endpoint"""
     try:
-        print(f"🔍 Testing: {origin} → {destination} on {date}")
-        flights = await search_flights_apify(origin, destination, date)
-        print(f"✅ Found {len(flights)} flights")
-        
+        flights = await flight_service.search_flights(origin, destination, date, 5)
         return {
             "success": True,
             "query": {"origin": origin, "destination": destination, "date": date},
@@ -164,500 +474,58 @@ async def test_flights(
             "count": len(flights)
         }
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.error(f"Flight test failed: {e}")
         return {"success": False, "error": str(e)}
 
-# Smart search - the main feature
-@app.post("/smart-search")
-async def smart_search(
-    request: Request,  # ← Fix: Add missing request parameter
-    origin: str = Form(...),
-    destination: str = Form(...),
-    departure: str = Form(...),
-    return_date: str = Form(...),
-    budget: Optional[str] = Form(None),
-    persons: int = Form(2)
+@app.post("/test-hotels")
+async def test_hotels(
+    city: str = Form("Barcelona"),
+    checkin: str = Form("2025-08-15"),
+    checkout: str = Form("2025-08-17")
 ):
-    """Smart travel search with combinations"""
+    """Simple hotel test endpoint"""
     try:
-        # Convert budget to integer if provided
-        budget_int = None
-        if budget and budget.strip():
-            try:
-                budget_int = int(budget)
-            except ValueError:
-                budget_int = None
-        
-        print(f"🧠 Smart Search: {origin}→{destination}, {persons} persons, budget: {budget_int}")
-        
-        # Step 0: Resolve city names to IATA codes (using simplified resolver)
-        print(f"🔍 Resolving origin city: {origin}")
-        origin_iata, origin_city, origin_suggestions = await hybrid_city_to_iata(origin)
-        if not origin_iata:
-            return templates.TemplateResponse("error.html", {
-                "request": request,
-                "error": f"Origin city '{origin}' not found. Suggestions: {', '.join(origin_suggestions[:3]) if origin_suggestions else 'None'}"
-            })
-        
-        print(f"🔍 Resolving destination city: {destination}")
-        dest_iata, dest_city, dest_suggestions = await hybrid_city_to_iata(destination)
-        if not dest_iata:
-            return templates.TemplateResponse("error.html", {
-                "request": request,
-                "error": f"Destination city '{destination}' not found. Suggestions: {', '.join(dest_suggestions[:3]) if dest_suggestions else 'None'}"
-            })
-        
-        print(f"✅ Resolved: {origin} → {origin_iata}, {destination} → {dest_iata}")
-        
-        # Step 1: Search flights
-        print("📡 Searching outbound flights...")
-        try:
-            outbound_flights = await search_flights_apify(origin_iata, dest_iata, departure)
-            print(f"✅ Found {len(outbound_flights)} outbound flights")
-        except Exception as e:
-            print(f"❌ Failed to fetch outbound flights: {e}")
-            return templates.TemplateResponse("error.html", {
-                "request": request,
-                "error": f"Flight search failed: Unable to find flights from {origin_city} to {dest_city}. Please try again later or contact support."
-            })
-        
-        print("📡 Searching return flights...")
-        try:
-            return_flights = await search_flights_apify(dest_iata, origin_iata, return_date)
-            print(f"✅ Found {len(return_flights)} return flights")
-        except Exception as e:
-            print(f"❌ Failed to fetch return flights: {e}")
-            return templates.TemplateResponse("error.html", {
-                "request": request,
-                "error": f"Flight search failed: Unable to find return flights from {dest_city} to {origin_city}. Please try again later or contact support."
-            })
-        
-        # Step 2: Search hotels
-        city = dest_city  # Use resolved city name
-        print(f"📡 Searching hotels in {city}...")
-        try:
-            hotels = await search_hotels_apify(city, departure, return_date)
-            print(f"✅ Found {len(hotels)} hotels")
-        except Exception as e:
-            print(f"❌ Failed to fetch hotels: {e}")
-            return templates.TemplateResponse("error.html", {
-                "request": request,
-                "error": f"Hotel search failed: Unable to find hotels in {city}. Please try again later or contact support."
-            })
-        
-        # Step 3: Search Airbnb properties
-        print(f"📡 Searching Airbnb properties in {city}...")
-        try:
-            airbnb_properties = await search_airbnb_apify(city, departure, return_date, persons)
-            print(f"✅ Found {len(airbnb_properties)} Airbnb properties")
-        except Exception as e:
-            print(f"❌ Failed to fetch Airbnb properties: {e}")
-            # Don't fail the entire search if Airbnb fails - just continue without it
-            airbnb_properties = []
-            print(f"⚠️ Continuing without Airbnb results")
-        
-        # Check if we have any results to show
-        if not outbound_flights and not return_flights:
-            return templates.TemplateResponse("error.html", {
-                "request": request,
-                "error": f"No flights found for {origin_city} ↔ {dest_city} on the selected dates. Please try different dates or destinations."
-            })
-        
-        if not hotels and not airbnb_properties:
-            return templates.TemplateResponse("error.html", {
-                "request": request,
-                "error": f"No accommodations found in {city} for the selected dates. Please try different dates or destinations."
-            })
-        
-        # Step 4: Create combinations
-        print("🎯 Creating combinations...")
-        combinations = create_combinations(
-            outbound_flights, return_flights, hotels, airbnb_properties,
-            departure, return_date, budget_int, persons
-        )
-        print(f"✅ Created {len(combinations)} combinations")
-        
-        # Calculate nights for hotel pricing
-        from datetime import datetime
-        checkin_date = datetime.strptime(departure, '%Y-%m-%d')
-        checkout_date = datetime.strptime(return_date, '%Y-%m-%d')
-        nights = (checkout_date - checkin_date).days
-
-        # Export search results to CSV for backup and analysis
-        search_params = {
-            'origin': f"{origin_city} ({origin_iata})",
-            'destination': f"{dest_city} ({dest_iata})",
-            'departure': departure,
-            'return_date': return_date,
-            'persons': persons,
-            'budget': budget_int,
-            'nights': nights
+        hotels = await accommodation_service.search_hotels(city, checkin, checkout, 10)
+        return {
+            "success": True,
+            "query": {"city": city, "checkin": checkin, "checkout": checkout},
+            "results": hotels,
+            "count": len(hotels)
         }
-        export_search_results_to_csv(outbound_flights, return_flights, hotels, airbnb_properties, search_params)
-
-        # Step 5: Render results
-        return templates.TemplateResponse("results.html", {
-            "request": request,
-            "combinations": combinations,
-            "outbound_flights": outbound_flights,
-            "return_flights": return_flights,
-            "hotels": hotels,
-            "airbnb_properties": airbnb_properties,
-            "origin": f"{origin_city} ({origin_iata})",
-            "destination": f"{dest_city} ({dest_iata})",
-            "origin_iata": origin_iata,
-            "dest_iata": dest_iata,
-            "departure": departure,
-            "return_date": return_date,
-            "checkin": departure,
-            "checkout": return_date,
-            "nights": nights,
-            "budget": budget_int,
-            "persons": persons
-        })
-        
     except Exception as e:
-        print(f"❌ Smart search error: {e}")
-        return templates.TemplateResponse("error.html", {
-            "request": request,
-            "error": str(e)
-        })
+        logger.error(f"Hotel test failed: {e}")
+        return {"success": False, "error": str(e)}
 
-@app.get("/results/{search_id}", response_class=HTMLResponse)
-async def show_search_results(request: Request, search_id: str):
-    """Show search results from progress search"""
-    if search_id not in search_results:
-        return templates.TemplateResponse("error.html", {
-            "request": request,
-            "error": "Search results not found or expired."
-        })
-    
-    result_data = search_results[search_id]
-    
-    return templates.TemplateResponse("results.html", {
-        "request": request,
-        "combinations": result_data['combinations'],
-        "outbound_flights": result_data['outbound_flights'],
-        "return_flights": result_data['return_flights'],
-        "hotels": result_data['hotels'],
-        "airbnb_properties": result_data['airbnb_properties'],
-        "origin": result_data['origin'],
-        "destination": result_data['destination'],
-        "origin_iata": result_data['origin_iata'],
-        "dest_iata": result_data['dest_iata'],
-        "departure": result_data['departure'],
-        "return_date": result_data['return_date'],
-        "checkin": result_data['checkin'],
-        "checkout": result_data['checkout'],
-        "nights": result_data['nights'],
-        "budget": result_data['budget'],
-        "persons": result_data['persons']
-    })
+# Custom exceptions
+class ValidationError(Exception):
+    """Custom exception for validation errors"""
+    pass
 
-def create_combinations(outbound_flights, return_flights, hotels, airbnb_properties, departure, return_date, budget, persons):
-    """Create flight + accommodation combinations (hotels + Airbnb)"""
-    print(f"🎯 Creating combinations: {len(outbound_flights)} out + {len(return_flights)} return flights, {len(hotels)} hotels, {len(airbnb_properties)} airbnb")
-    combinations = []
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Application startup tasks"""
+    logger.info("Starting Holiday Engine v2.0")
+    logger.info(f"Debug mode: {settings.debug}")
+    logger.info(f"API token configured: {'Yes' if settings.apify_token else 'No'}")
     
-    # Calculate nights
-    from datetime import datetime
-    checkin = datetime.strptime(departure, '%Y-%m-%d')
-    checkout = datetime.strptime(return_date, '%Y-%m-%d')
-    nights = (checkout - checkin).days
-    
-    print(f"📊 Calculating for {nights} nights, {persons} persons")
-    
-    # Combine hotels and Airbnb properties for accommodation options
-    all_accommodations = []
-    
-    # Add hotels with type marking
-    for hotel in hotels[:3]:
-        hotel_copy = hotel.copy()
-        hotel_copy['accommodation_type'] = 'hotel'
-        all_accommodations.append(hotel_copy)
-    
-    # Add Airbnb properties with type marking
-    for airbnb in airbnb_properties[:3]:
-        airbnb_copy = airbnb.copy()
-        airbnb_copy['accommodation_type'] = 'airbnb'
-        all_accommodations.append(airbnb_copy)
-    
-    print(f"📊 Total accommodations: {len(hotels)} hotels + {len(airbnb_properties)} Airbnb = {len(all_accommodations)} options")
-    
-    # Create combinations - check if we have required data first
-    if not outbound_flights or not return_flights:
-        print("❌ No flights available for combinations")
-        return []
-    
-    if not all_accommodations:
-        print("❌ No accommodations available for combinations")
-        return []
-    
-    # Limit to top options for performance
-    for out_flight in outbound_flights[:3]:
-        for ret_flight in return_flights[:3]:
-            for accommodation in all_accommodations:
-                
-                # Calculate costs
-                flight_cost = (out_flight['price'] + ret_flight['price']) * persons
-                
-                # Handle different accommodation pricing
-                if accommodation['accommodation_type'] == 'hotel':
-                    accommodation_cost = accommodation['price'] * nights
-                    accommodation_label = 'hotel'
-                else:  # airbnb
-                    # Airbnb price might be per night or total - use per night pricing
-                    accommodation_cost = accommodation['price'] * nights
-                    accommodation_label = 'airbnb'
-                
-                total_cost = flight_cost + accommodation_cost
-                
-                # Budget filter - make it more lenient for testing
-                if budget and total_cost > budget * 1.2:  # Allow 20% over budget
-                    print(f"  ❌ Combination too expensive: {total_cost}€ > {budget}€ budget")
-                    continue
-                
-                combination = {
-                    'outbound_flight': out_flight,
-                    'return_flight': ret_flight,
-                    'accommodation': accommodation,
-                    'accommodation_type': accommodation['accommodation_type'],
-                    'flight_cost': flight_cost,
-                    'accommodation_cost': accommodation_cost,
-                    'total_cost': total_cost,
-                    'nights': nights,
-                    'persons': persons,
-                    'score': calculate_score(total_cost, accommodation['rating'], budget)
-                }
-                
-                combinations.append(combination)
-                print(f"  ✅ Combination: {total_cost}€ total ({flight_cost}€ flights + {accommodation_cost}€ {accommodation_label})")
-    
-    # Sort by score
-    combinations.sort(key=lambda x: x['score'], reverse=True)
-    print(f"✅ Created {len(combinations)} total combinations, returning top 5")
-    return combinations[:5]  # Top 5
-
-def calculate_score(total_cost, accommodation_rating, budget):
-    """Simple scoring algorithm for hotels and Airbnb"""
-    score = 0
-    
-    # Accommodation rating (0-50 points)
-    score += accommodation_rating * 10
-    
-    # Budget score (0-50 points)
-    if budget:
-        if total_cost <= budget * 0.8:  # Under 80% of budget
-            score += 50
-        elif total_cost <= budget:  # Within budget
-            score += 30
-        else:  # Over budget (shouldn't happen due to filter)
-            score += 0
-    else:
-        # No budget - prefer lower prices
-        score += max(0, 50 - total_cost / 20)
-    
-    return round(score, 1)
-
-def export_search_results_to_csv(outbound_flights, return_flights, hotels, airbnb_properties, search_params):
-    """Export search results to CSV files for backup and analysis"""
+    # Test API connectivity
     try:
-        # Create output directory if it doesn't exist
-        output_dir = "output"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Generate timestamp for filenames
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        search_id = f"{search_params['origin']}_{search_params['destination']}_{timestamp}"
-        
-        # Export flights
-        if outbound_flights or return_flights:
-            flights_file = os.path.join(output_dir, f"flights_{search_id}.csv")
-            with open(flights_file, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = [
-                    'search_timestamp', 'search_origin', 'search_destination', 'search_departure', 
-                    'search_return', 'search_persons', 'search_budget',
-                    'flight_type', 'airline', 'departure_time', 'duration', 'stops', 
-                    'price_eur', 'source', 'booking_url', 'date'
-                ]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                
-                # Write outbound flights
-                for flight in outbound_flights:
-                    writer.writerow({
-                        'search_timestamp': timestamp,
-                        'search_origin': search_params['origin'],
-                        'search_destination': search_params['destination'],
-                        'search_departure': search_params['departure'],
-                        'search_return': search_params['return_date'],
-                        'search_persons': search_params['persons'],
-                        'search_budget': search_params.get('budget', ''),
-                        'flight_type': 'outbound',
-                        'airline': flight.get('airline', ''),
-                        'departure_time': flight.get('time', ''),
-                        'duration': flight.get('duration', ''),
-                        'stops': flight.get('stops', ''),
-                        'price_eur': flight.get('price', ''),
-                        'source': flight.get('source', ''),
-                        'booking_url': flight.get('url', ''),
-                        'date': flight.get('date', '')
-                    })
-                
-                # Write return flights
-                for flight in return_flights:
-                    writer.writerow({
-                        'search_timestamp': timestamp,
-                        'search_origin': search_params['origin'],
-                        'search_destination': search_params['destination'],
-                        'search_departure': search_params['departure'],
-                        'search_return': search_params['return_date'],
-                        'search_persons': search_params['persons'],
-                        'search_budget': search_params.get('budget', ''),
-                        'flight_type': 'return',
-                        'airline': flight.get('airline', ''),
-                        'departure_time': flight.get('time', ''),
-                        'duration': flight.get('duration', ''),
-                        'stops': flight.get('stops', ''),
-                        'price_eur': flight.get('price', ''),
-                        'source': flight.get('source', ''),
-                        'booking_url': flight.get('url', ''),
-                        'date': flight.get('date', '')
-                    })
-            
-            print(f"✅ Exported {len(outbound_flights + return_flights)} flights to {flights_file}")
-        
-        # Export hotels
-        if hotels:
-            hotels_file = os.path.join(output_dir, f"hotels_{search_id}.csv")
-            with open(hotels_file, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = [
-                    'search_timestamp', 'search_origin', 'search_destination', 'search_departure',
-                    'search_return', 'search_persons', 'search_budget', 'nights',
-                    'hotel_name', 'rating', 'location', 'type', 'price_total_eur', 
-                    'price_per_night_eur', 'source', 'booking_url', 'checkin', 'checkout'
-                ]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                
-                nights = search_params.get('nights', 1)
-                for hotel in hotels:
-                    writer.writerow({
-                        'search_timestamp': timestamp,
-                        'search_origin': search_params['origin'],
-                        'search_destination': search_params['destination'],
-                        'search_departure': search_params['departure'],
-                        'search_return': search_params['return_date'],
-                        'search_persons': search_params['persons'],
-                        'search_budget': search_params.get('budget', ''),
-                        'nights': nights,
-                        'hotel_name': hotel.get('name', ''),
-                        'rating': hotel.get('rating', ''),
-                        'location': hotel.get('location', ''),
-                        'type': hotel.get('type', ''),
-                        'price_total_eur': hotel.get('price', ''),
-                        'price_per_night_eur': round(hotel.get('price', 0) / max(nights, 1), 2),
-                        'source': hotel.get('source', ''),
-                        'booking_url': hotel.get('url', ''),
-                        'checkin': hotel.get('checkin', ''),
-                        'checkout': hotel.get('checkout', '')
-                    })
-            
-            print(f"✅ Exported {len(hotels)} hotels to {hotels_file}")
-        
-        # Export Airbnb properties
-        if airbnb_properties:
-            airbnb_file = os.path.join(output_dir, f"airbnb_{search_id}.csv")
-            with open(airbnb_file, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = [
-                    'search_timestamp', 'search_origin', 'search_destination', 'search_departure',
-                    'search_return', 'search_persons', 'search_budget', 'nights',
-                    'property_name', 'rating', 'review_count', 'property_type', 'bedrooms', 'bathrooms',
-                    'location', 'host_name', 'is_superhost', 'price_total_eur', 'price_per_night_eur',
-                    'amenities', 'source', 'booking_url', 'checkin', 'checkout'
-                ]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                
-                nights = search_params.get('nights', 1)
-                for property in airbnb_properties:
-                    # Handle amenities list
-                    amenities_str = ', '.join(property.get('amenities', [])[:5])  # First 5 amenities
-                    
-                    writer.writerow({
-                        'search_timestamp': timestamp,
-                        'search_origin': search_params['origin'],
-                        'search_destination': search_params['destination'],
-                        'search_departure': search_params['departure'],
-                        'search_return': search_params['return_date'],
-                        'search_persons': search_params['persons'],
-                        'search_budget': search_params.get('budget', ''),
-                        'nights': nights,
-                        'property_name': property.get('name', ''),
-                        'rating': property.get('rating', ''),
-                        'review_count': property.get('review_count', ''),
-                        'property_type': property.get('property_type', ''),
-                        'bedrooms': property.get('bedrooms', ''),
-                        'bathrooms': property.get('bathrooms', ''),
-                        'location': property.get('location', ''),
-                        'host_name': property.get('host_name', ''),
-                        'is_superhost': property.get('is_superhost', ''),
-                        'price_total_eur': property.get('total_price', '') or property.get('price', 0) * nights,
-                        'price_per_night_eur': property.get('price', ''),
-                        'amenities': amenities_str,
-                        'source': property.get('source', ''),
-                        'booking_url': property.get('url', ''),
-                        'checkin': search_params['departure'],
-                        'checkout': search_params['return_date']
-                    })
-            
-            print(f"✅ Exported {len(airbnb_properties)} Airbnb properties to {airbnb_file}")
-            
-        print(f"📁 Search results exported with ID: {search_id}")
-        
+        health = await api_client.health_check()
+        logger.info(f"API health check: {health['status']}")
     except Exception as e:
-        print(f"❌ Error exporting search results: {e}")
-
-def get_city_name(iata_code):
-    """Convert IATA to city name"""
-    cities = {
-        'BCN': 'Barcelona',
-        'FCO': 'Rome',
-        'CDG': 'Paris', 
-        'LHR': 'London',
-        'AMS': 'Amsterdam',
-        'MUC': 'Munich',
-        'VIE': 'Vienna',
-        'ZUR': 'Zurich'
-    }
-    return cities.get(iata_code, iata_code)
-
-# Simple endpoints for testing
-@app.post("/flights-only")
-async def flights_only(origin: str = Form(...), destination: str = Form(...), date: str = Form(...)):
-    """Simple flight search"""
-    flights = await search_flights_apify(origin, destination, date)
-    return {"flights": flights}
-
-@app.post("/hotels-only") 
-async def hotels_only(city: str = Form(...), checkin: str = Form(...), checkout: str = Form(...)):
-    """Simple hotel search"""
-    hotels = await search_hotels_apify(city, checkin, checkout)
-    return {"hotels": hotels}
+        logger.warning(f"API health check failed: {e}")
 
 if __name__ == "__main__":
     import uvicorn
     
-    # Check if templates directory exists
-    if not os.path.exists("templates"):
-        print("❌ Error: 'templates' directory not found!")
-        print("💡 Please create templates/ directory with HTML files")
-        exit(1)
+    logger.info("🚀 Starting Holiday Engine v2.0...")
+    logger.info(f"🌐 Open: http://{settings.host}:{settings.port}")
+    logger.info(f"🔧 Health: http://{settings.host}:{settings.port}/health")
     
-    print("🚀 Starting Travel Platform...")
-    print("🌐 Open: http://localhost:8000")
-    print("🔧 Health: http://localhost:8000/health")
-    print("🧪 Test: http://localhost:8000/test-flights")
-    
-    # Fix: Remove reload for direct run
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host=settings.host, 
+        port=settings.port,
+        reload=settings.debug
+    )
