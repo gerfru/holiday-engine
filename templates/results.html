@@ -270,6 +270,164 @@
             background: #218838;
         }
 
+        /* Community Tips Styles */
+        .tips-header {
+            padding: 30px 20px;
+            text-align: center;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .tips-header h2 {
+            margin: 0 0 10px 0;
+            font-size: 1.8rem;
+        }
+
+        .tips-filters {
+            padding: 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .tips-filter-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .tip-filter-btn {
+            padding: 8px 16px;
+            background: white;
+            border: 2px solid #e9ecef;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .tip-filter-btn:hover {
+            border-color: #667eea;
+            color: #667eea;
+        }
+
+        .tip-filter-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .tips-container {
+            padding: 20px;
+        }
+
+        .tips-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+
+        .tip-card {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 15px;
+            padding: 20px;
+            transition: all 0.3s;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .tip-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+        }
+
+        .tip-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+
+        .tip-category {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .tip-category.restaurants {
+            background: #e8f5e8;
+            color: #2d7d32;
+        }
+
+        .tip-category.activities {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .tip-category.warnings {
+            background: #ffebee;
+            color: #d32f2f;
+        }
+
+        .tip-category.transport {
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }
+
+        .tip-category.accommodation {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+
+        .tip-category.general {
+            background: #f5f5f5;
+            color: #616161;
+        }
+
+        .tip-meta {
+            text-align: right;
+            font-size: 0.8rem;
+            color: #666;
+        }
+
+        .tip-upvotes {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .tip-text {
+            font-size: 1rem;
+            line-height: 1.6;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .tip-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+            color: #666;
+            padding-top: 15px;
+            border-top: 1px solid #f1f2f6;
+        }
+
+        .tip-source {
+            font-weight: 500;
+        }
+
+        .tip-author {
+            font-style: italic;
+        }
+
         /* Back Button */
         .back-btn {
             display: inline-block;
@@ -296,6 +454,24 @@
         }
 
         .no-results h2 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        /* Empty Tips State */
+        .empty-tips {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+
+        .empty-tips-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .empty-tips h3 {
             color: #333;
             margin-bottom: 15px;
         }
@@ -328,6 +504,24 @@
                 gap: 10px;
                 align-items: flex-start;
             }
+
+            .tips-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .tip-card {
+                padding: 15px;
+            }
+
+            .tips-filter-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .tip-filter-btn {
+                width: 100%;
+                text-align: center;
+            }
         }
     </style>
 </head>
@@ -335,6 +529,9 @@
     <div class="header">
         <h1>🎯 Travel Results</h1>
         <p>{{ origin }} → {{ destination }}{% if budget %} | Budget: {{ budget }}€{% endif %} | {{ persons }} Person{% if persons > 1 %}en{% endif %}</p>
+        {% if search_time %}
+        <p style="font-size: 0.9rem; opacity: 0.8;">Search completed in {{ search_time }}s at {{ timestamp }}</p>
+        {% endif %}
     </div>
 
     <div class="container">
@@ -351,6 +548,9 @@
             </button>
             <button class="tab-button" onclick="switchTab('combinations')">
                 🎯 Smart Combinations ({{ combinations|length }})
+            </button>
+            <button class="tab-button" onclick="switchTab('tips')">
+                🌍 Community Tips ({{ crowd_tips|length }})
             </button>
         </div>
 
@@ -768,6 +968,90 @@
                 </div>
                 {% endif %}
             </div>
+
+            <!-- Community Tips Tab -->
+            <div id="tips-tab" class="tab-pane">
+                <div class="tips-header">
+                    <h2>🌍 Community Travel Tips</h2>
+                    <p>Real advice from travelers who've been to {{ destination_city }}</p>
+                </div>
+
+                {% if crowd_tips %}
+                    <!-- Filter Buttons -->
+                    <div class="tips-filters">
+                        <div class="tips-filter-buttons">
+                            <button class="tip-filter-btn active" data-category="all">
+                                All Tips ({{ crowd_tips|length }})
+                            </button>
+                            <button class="tip-filter-btn" data-category="restaurants">
+                                🍽️ Restaurants
+                            </button>
+                            <button class="tip-filter-btn" data-category="activities">
+                                🎯 Activities
+                            </button>
+                            <button class="tip-filter-btn" data-category="warnings">
+                                ⚠️ Warnings
+                            </button>
+                            <button class="tip-filter-btn" data-category="transport">
+                                🚌 Transport
+                            </button>
+                            <button class="tip-filter-btn" data-category="accommodation">
+                                🏨 Hotels
+                            </button>
+                            <button class="tip-filter-btn" data-category="general">
+                                💡 General
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Tips Grid -->
+                    <div class="tips-container">
+                        <div class="tips-grid" id="tips-grid">
+                            {% for tip in crowd_tips %}
+                            <div class="tip-card" data-category="{{ tip.category }}">
+                                <div class="tip-header">
+                                    <span class="tip-category {{ tip.category }}">
+                                        {% if tip.category == 'restaurants' %}🍽️ Restaurant
+                                        {% elif tip.category == 'activities' %}🎯 Activity
+                                        {% elif tip.category == 'warnings' %}⚠️ Warning
+                                        {% elif tip.category == 'transport' %}🚌 Transport
+                                        {% elif tip.category == 'accommodation' %}🏨 Hotel
+                                        {% else %}💡 General{% endif %}
+                                    </span>
+                                    <div class="tip-meta">
+                                        <div class="tip-upvotes">
+                                            <span>👍</span>
+                                            <span>{{ tip.upvotes }}</span>
+                                        </div>
+                                        <div style="margin-top: 5px;">{{ tip.source }}</div>
+                                    </div>
+                                </div>
+                                
+                                <div class="tip-text">
+                                    {{ tip.tip }}
+                                </div>
+                                
+                                <div class="tip-footer">
+                                    <span class="tip-source">{{ tip.source }}</span>
+                                    {% if tip.url %}
+                                        <a href="{{ tip.url }}" target="_blank" style="color: #667eea; text-decoration: none; font-size: 0.8rem;">
+                                            Read More →
+                                        </a>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                {% else %}
+                    <div class="empty-tips">
+                        <div class="empty-tips-icon">🗺️</div>
+                        <h3>No Community Tips Yet</h3>
+                        <p>Be the first to share tips for {{ destination_city }}!</p>
+                        <p style="font-size: 0.9rem; color: #999;">Tips are sourced from travel communities and forums.</p>
+                    </div>
+                {% endif %}
+            </div>
         </div>
 
         <a href="/" class="back-btn">← New Search</a>
@@ -783,6 +1067,58 @@
             // Add active class to clicked button and corresponding pane
             event.target.classList.add('active');
             document.getElementById(tabName + '-tab').classList.add('active');
+        }
+
+        // Community Tips Filtering
+        function filterTips(category) {
+            const tips = document.querySelectorAll('.tip-card');
+            const buttons = document.querySelectorAll('.tip-filter-btn');
+            
+            // Update active button
+            buttons.forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Filter tips
+            let visibleCount = 0;
+            tips.forEach(tip => {
+                if (category === 'all' || tip.dataset.category === category) {
+                    tip.style.display = 'block';
+                    visibleCount++;
+                } else {
+                    tip.style.display = 'none';
+                }
+            });
+            
+            // Update count in "All Tips" button
+            const allTipsBtn = document.querySelector('.tip-filter-btn[data-category="all"]');
+            if (category === 'all') {
+                allTipsBtn.textContent = `All Tips (${visibleCount})`;
+            }
+        }
+
+        // Add event listeners for tip filters
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.tip-filter-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    filterTips(this.dataset.category);
+                });
+            });
+            
+            // Update filter button counts
+            updateTipFilterCounts();
+        });
+
+        function updateTipFilterCounts() {
+            const categories = ['restaurants', 'activities', 'warnings', 'transport', 'accommodation', 'general'];
+            
+            categories.forEach(category => {
+                const count = document.querySelectorAll(`.tip-card[data-category="${category}"]`).length;
+                const btn = document.querySelector(`.tip-filter-btn[data-category="${category}"]`);
+                if (btn && count > 0) {
+                    const text = btn.textContent.split('(')[0].trim();
+                    btn.textContent = `${text} (${count})`;
+                }
+            });
         }
 
         // Table sorting
@@ -875,12 +1211,14 @@
                 airlines.add(row.dataset.airline);
             });
             const airlineSelect = document.getElementById('flight-airline-filter');
-            airlines.forEach(airline => {
-                const option = document.createElement('option');
-                option.value = airline;
-                option.textContent = airline;
-                airlineSelect.appendChild(option);
-            });
+            if (airlineSelect) {
+                airlines.forEach(airline => {
+                    const option = document.createElement('option');
+                    option.value = airline;
+                    option.textContent = airline;
+                    airlineSelect.appendChild(option);
+                });
+            }
 
             // Populate hotel type filter
             const types = new Set();
@@ -888,12 +1226,14 @@
                 types.add(row.dataset.type);
             });
             const typeSelect = document.getElementById('hotel-type-filter');
-            types.forEach(type => {
-                const option = document.createElement('option');
-                option.value = type;
-                option.textContent = type.charAt(0).toUpperCase() + type.slice(1);
-                typeSelect.appendChild(option);
-            });
+            if (typeSelect) {
+                types.forEach(type => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+                    typeSelect.appendChild(option);
+                });
+            }
 
             // Populate location filter
             const locations = new Set();
@@ -901,12 +1241,14 @@
                 locations.add(row.dataset.location);
             });
             const locationSelect = document.getElementById('hotel-location-filter');
-            locations.forEach(location => {
-                const option = document.createElement('option');
-                option.value = location;
-                option.textContent = location;
-                locationSelect.appendChild(option);
-            });
+            if (locationSelect) {
+                locations.forEach(location => {
+                    const option = document.createElement('option');
+                    option.value = location;
+                    option.textContent = location;
+                    locationSelect.appendChild(option);
+                });
+            }
 
             // Populate Airbnb property type filter
             const airbnbTypes = new Set();
@@ -959,7 +1301,10 @@
                 if (show) visibleCount++;
             });
 
-            document.getElementById('airbnb-count').textContent = `Showing ${visibleCount} properties`;
+            const countElement = document.getElementById('airbnb-count');
+            if (countElement) {
+                countElement.textContent = `Showing ${visibleCount} properties`;
+            }
         }
 
         function clearAirbnbFilters() {
@@ -1016,7 +1361,10 @@
                 if (show) visibleCount++;
             });
 
-            document.getElementById('flights-count').textContent = `Showing ${visibleCount} flights`;
+            const countElement = document.getElementById('flights-count');
+            if (countElement) {
+                countElement.textContent = `Showing ${visibleCount} flights`;
+            }
         }
 
         function applyHotelFilters() {
@@ -1054,7 +1402,10 @@
                 if (show) visibleCount++;
             });
 
-            document.getElementById('hotels-count').textContent = `Showing ${visibleCount} hotels`;
+            const countElement = document.getElementById('hotels-count');
+            if (countElement) {
+                countElement.textContent = `Showing ${visibleCount} hotels`;
+            }
         }
 
         function clearFlightFilters() {
@@ -1076,22 +1427,37 @@
         // Add filter event listeners
         document.addEventListener('DOMContentLoaded', function() {
             // Flight filters
-            document.getElementById('flight-price-filter')?.addEventListener('input', applyFlightFilters);
-            document.getElementById('flight-stops-filter')?.addEventListener('change', applyFlightFilters);
-            document.getElementById('flight-airline-filter')?.addEventListener('change', applyFlightFilters);
-            document.getElementById('flight-time-filter')?.addEventListener('change', applyFlightFilters);
+            const flightPriceFilter = document.getElementById('flight-price-filter');
+            const flightStopsFilter = document.getElementById('flight-stops-filter');
+            const flightAirlineFilter = document.getElementById('flight-airline-filter');
+            const flightTimeFilter = document.getElementById('flight-time-filter');
+
+            if (flightPriceFilter) flightPriceFilter.addEventListener('input', applyFlightFilters);
+            if (flightStopsFilter) flightStopsFilter.addEventListener('change', applyFlightFilters);
+            if (flightAirlineFilter) flightAirlineFilter.addEventListener('change', applyFlightFilters);
+            if (flightTimeFilter) flightTimeFilter.addEventListener('change', applyFlightFilters);
 
             // Hotel filters
-            document.getElementById('hotel-price-filter')?.addEventListener('input', applyHotelFilters);
-            document.getElementById('hotel-rating-filter')?.addEventListener('change', applyHotelFilters);
-            document.getElementById('hotel-type-filter')?.addEventListener('change', applyHotelFilters);
-            document.getElementById('hotel-location-filter')?.addEventListener('change', applyHotelFilters);
+            const hotelPriceFilter = document.getElementById('hotel-price-filter');
+            const hotelRatingFilter = document.getElementById('hotel-rating-filter');
+            const hotelTypeFilter = document.getElementById('hotel-type-filter');
+            const hotelLocationFilter = document.getElementById('hotel-location-filter');
+
+            if (hotelPriceFilter) hotelPriceFilter.addEventListener('input', applyHotelFilters);
+            if (hotelRatingFilter) hotelRatingFilter.addEventListener('change', applyHotelFilters);
+            if (hotelTypeFilter) hotelTypeFilter.addEventListener('change', applyHotelFilters);
+            if (hotelLocationFilter) hotelLocationFilter.addEventListener('change', applyHotelFilters);
 
             // Airbnb filters
-            document.getElementById('airbnb-price-filter')?.addEventListener('input', applyAirbnbFilters);
-            document.getElementById('airbnb-rating-filter')?.addEventListener('change', applyAirbnbFilters);
-            document.getElementById('airbnb-type-filter')?.addEventListener('change', applyAirbnbFilters);
-            document.getElementById('airbnb-host-filter')?.addEventListener('change', applyAirbnbFilters);
+            const airbnbPriceFilter = document.getElementById('airbnb-price-filter');
+            const airbnbRatingFilter = document.getElementById('airbnb-rating-filter');
+            const airbnbTypeFilter = document.getElementById('airbnb-type-filter');
+            const airbnbHostFilter = document.getElementById('airbnb-host-filter');
+
+            if (airbnbPriceFilter) airbnbPriceFilter.addEventListener('input', applyAirbnbFilters);
+            if (airbnbRatingFilter) airbnbRatingFilter.addEventListener('change', applyAirbnbFilters);
+            if (airbnbTypeFilter) airbnbTypeFilter.addEventListener('change', applyAirbnbFilters);
+            if (airbnbHostFilter) airbnbHostFilter.addEventListener('change', applyAirbnbFilters);
         });
     </script>
 </body>

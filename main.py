@@ -1,4 +1,4 @@
-# main.py - Complete FastAPI Application with Live Autocomplete
+# main.py - Complete FastAPI Application with Live Autocomplete + Crowd-Sourced Features
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from typing import Optional
+from typing import Optional, Dict, Any, Tuple
 import asyncio
 import logging
 import httpx
@@ -18,14 +18,17 @@ from utils.api_client import create_apify_client, ApiClientError
 from services.flight_service import FlightService
 from services.hotel_service import AccommodationService
 from services.city_resolver import CityResolverService
+from services.crowd_sourced_service import SimpleCrowdService, router as crowd_router
 from business_logic import TravelCombinationEngine, export_search_results
 
-# Setup
+# Setup logging
 logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
 app = FastAPI(
     title="Holiday Engine",
-    description="Intelligent Travel Search & Comparison Platform",
-    version="2.0.0",
+    description="Intelligent Travel Search & Comparison Platform with Community Tips",
+    version="2.1.0",
     debug=settings.debug
 )
 
@@ -45,8 +48,15 @@ flight_service = FlightService(api_client)
 accommodation_service = AccommodationService(api_client)
 combination_engine = TravelCombinationEngine()
 city_resolver = CityResolverService()
+crowd_service = SimpleCrowdService()  # ✅ NEW: Crowd-sourced service
 
-# Routes
+# Include crowd-sourced router
+app.include_router(crowd_router, prefix="/api", tags=["crowd-sourced"])  # ✅ NEW
+
+# =============================================================================
+# MAIN ROUTES
+# =============================================================================
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Main search page"""
@@ -59,34 +69,128 @@ async def health_check():
         api_health = await api_client.health_check()
         return {
             "status": "healthy",
-            "version": "2.0.0",
+            "version": "2.1.0",
             "debug": settings.debug,
             "api_status": api_health["status"],
             "services": {
                 "flight_service": "active",
                 "accommodation_service": "active", 
                 "combination_engine": "active",
-                "city_resolver": "active"
+                "city_resolver": "active",
+                "crowd_service": "active"  # ✅ NEW
             }
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+        return {"status": "unhealthy", "error": str(e)}
 
-# Live Autocomplete APIs
+@app.post("/smart-search")
+async def smart_search(
+    request: Request,
+    origin: str = Form(...),
+    destination: str = Form(...),
+    departure: str = Form(...),
+    return_date: str = Form(...),
+    budget: Optional[str] = Form(None),
+    persons: int = Form(2)
+):
+    """
+    Smart travel search with crowd-sourced community tips
+    """
+    search_start_time = datetime.now()
+    
+    try:
+        # Step 1: Validate and process inputs
+        search_params = await _validate_search_params(
+            origin, destination, departure, return_date, budget, persons
+        )
+        
+        logger.info(f"Starting smart search: {search_params}")
+        
+        # Step 2: Resolve cities to IATA codes
+        origin_info, dest_info = await _resolve_cities(origin, destination)
+        
+        # Step 3: Perform all searches concurrently (including crowd tips)
+        search_results = await _perform_all_searches(
+            origin_info, dest_info, search_params
+        )
+        
+        # Step 4: Create intelligent combinations
+        combinations = combination_engine.create_combinations(
+            outbound_flights=search_results['flights']['outbound'],
+            return_flights=search_results['flights']['return'],
+            hotels=search_results['accommodations']['hotels'],
+            airbnb_properties=search_results['accommodations']['airbnb'],
+            search_params=search_params
+        )
+        
+        # Step 5: Export results (if enabled)
+        export_data = None
+        if settings.export_csv:
+            export_data = await export_search_results(search_results, search_params)
+        
+        # Step 6: Calculate search time
+        search_time = (datetime.now() - search_start_time).total_seconds()
+        
+        # Step 7: Render results with crowd-sourced tips
+        return templates.TemplateResponse("results.html", {
+            "request": request,
+            "combinations": combinations,
+            "outbound_flights": search_results['flights']['outbound'],
+            "return_flights": search_results['flights']['return'],
+            "hotels": search_results['accommodations']['hotels'],
+            "airbnb_properties": search_results['accommodations']['airbnb'],
+            "crowd_tips": search_results['crowd_tips'],  # ✅ NEW: Community tips
+            "origin": f"{origin_info['city']} ({origin_info['iata']})",
+            "destination": f"{dest_info['city']} ({dest_info['iata']})",
+            "origin_iata": origin_info['iata'],
+            "dest_iata": dest_info['iata'],
+            "destination_city": dest_info['city'],  # ✅ NEW: For crowd tips
+            "departure": search_params['departure'],
+            "return_date": search_params['return_date'],
+            "checkin": search_params['departure'],
+            "checkout": search_params['return_date'],
+            "nights": search_params['nights'],
+            "budget": search_params['budget'],
+            "persons": search_params['persons'],
+            "search_time": round(search_time, 2),
+            "export_data": export_data,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+        
+    except ValidationError as e:
+        logger.warning(f"Validation error: {e}")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": str(e),
+            "error_type": "validation"
+        })
+        
+    except ApiClientError as e:
+        logger.error(f"API error: {e}")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": "Search service temporarily unavailable. Please try again later.",
+            "error_type": "api"
+        })
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in smart search: {e}")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "error": "An unexpected error occurred. Please try again.",
+            "error_type": "system"
+        })
+
+# =============================================================================
+# API ROUTES
+# =============================================================================
+
 @app.get("/api/cities/autocomplete")
 async def city_autocomplete(q: str = ""):
     """
     Live city autocomplete using OpenStreetMap Nominatim
-    
-    Args:
-        q: Query string (e.g., "Mala" for "Malaga")
-        
-    Returns:
-        List of city suggestions with coordinates
+    Enhanced with better filtering and performance
     """
     if not q or len(q) < 2:
         return {"suggestions": []}
@@ -94,99 +198,12 @@ async def city_autocomplete(q: str = ""):
     try:
         logger.info(f"Autocomplete search: '{q}'")
         
-        # Call Nominatim API
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            "q": q,
-            "format": "json",
-            "addressdetails": 1,
-            "limit": 8,  # More results for better selection
-            "accept-language": "de,en",  # Prefer German, fallback English
-            "featuretype": "city"  # Focus on cities
-        }
+        # Call Nominatim API with optimized parameters
+        suggestions = await _fetch_city_suggestions(q)
         
-        headers = {
-            "User-Agent": "HolidayEngine/2.0 (travel-search-platform)"
-        }
-        
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url, params=params, headers=headers)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                logger.info(f"DEBUG: Raw Nominatim data for '{q}':")
-                for i, item in enumerate(data[:3]):  # Erste 3 Ergebnisse
-                    logger.info(f"  Result {i}: type='{item.get('type')}', class='{item.get('class')}', name='{item.get('name')}'")
-
-                # Filter and format results
-                suggestions = []
-                seen_cities = set()  # Avoid duplicates
-                
-                for item in data:
-                    # Extract city information
-                    display_name = item.get("display_name", "")
-                    place_type = item.get("type", "")
-                    place_class = item.get("class", "")
-                    
-                    # EXPANDED: Include more place types
-                    valid_types = [
-                        "city", "town", "village", "municipality",
-                        "administrative",  # ✅ For places like Schladming
-                        "hamlet", "suburb", "quarter", "neighbourhood"
-                    ]
-                    
-                    # Also check if it's a place class (boundary, place, etc.)
-                    valid_classes = ["place", "boundary"]
-                    
-                    # Include if type OR class is valid
-                    if place_type not in valid_types and place_class not in valid_classes:
-                        continue
-                    
-                    # Extract clean city name from address
-                    address = item.get("address", {})
-                    city_name = (
-                        address.get("city") or 
-                        address.get("town") or 
-                        address.get("village") or
-                        address.get("municipality") or
-                        address.get("hamlet") or  # ✅ Small places
-                        item.get("name", "")
-                    )
-                    
-                    if not city_name or city_name.lower() in seen_cities:
-                        continue
-                    
-                    seen_cities.add(city_name.lower())
-                    
-                    # Get country for context
-                    country = address.get("country", "")
-                    country_code = address.get("country_code", "").upper()
-                    
-                    # Create suggestion
-                    suggestion = {
-                        "city": city_name,
-                        "country": country,
-                        "country_code": country_code,
-                        "display_name": f"{city_name}, {country}" if country else city_name,
-                        "lat": float(item.get("lat", 0)),
-                        "lon": float(item.get("lon", 0)),
-                        "importance": item.get("importance", 0),  # OSM importance score
-                        "type": place_type
-                    }
-                    
-                    suggestions.append(suggestion)
-                
-                # Sort by importance (OSM's relevance score)
-                suggestions.sort(key=lambda x: x["importance"], reverse=True)
-                
-                logger.info(f"Found {len(suggestions)} city suggestions for '{q}'")
-                return {"suggestions": suggestions[:6]}  # Return top 6
-            
-            else:
-                logger.warning(f"Nominatim API error: {response.status_code}")
-                return {"suggestions": [], "error": "Search service unavailable"}
-        
+        logger.info(f"Found {len(suggestions)} city suggestions for '{q}'")
+        return {"suggestions": suggestions}
+    
     except asyncio.TimeoutError:
         logger.warning(f"Autocomplete timeout for query: '{q}'")
         return {"suggestions": [], "error": "Search timeout"}
@@ -199,18 +216,11 @@ async def city_autocomplete(q: str = ""):
 async def resolve_city_to_airport(city: str = ""):
     """
     Resolve a city name to nearest airport IATA code
-    
-    Args:
-        city: City name to resolve
-        
-    Returns:
-        Airport information or error
     """
     if not city:
         return {"error": "City name required"}
     
     try:
-        # Use your existing city resolver
         iata, resolved_city, suggestions = await city_resolver.resolve_to_iata(city)
         
         if iata:
@@ -232,91 +242,10 @@ async def resolve_city_to_airport(city: str = ""):
         logger.error(f"City resolution error: {e}")
         return {"error": "Resolution failed"}
 
-@app.post("/smart-search")
-async def smart_search(
-    request: Request,
-    origin: str = Form(...),
-    destination: str = Form(...),
-    departure: str = Form(...),
-    return_date: str = Form(...),
-    budget: Optional[str] = Form(None),
-    persons: int = Form(2)
-):
-    """
-    Smart travel search with improved error handling and structure
-    """
-    try:
-        # Validate and process inputs
-        search_params = await _validate_search_params(
-            origin, destination, departure, return_date, budget, persons
-        )
-        
-        logger.info(f"Starting smart search: {search_params}")
-        
-        # Step 1: Resolve cities to IATA codes
-        origin_info, dest_info = await _resolve_cities(origin, destination)
-        
-        # Step 2: Search flights and accommodations concurrently
-        search_results = await _perform_concurrent_search(
-            origin_info, dest_info, search_params
-        )
-        
-        # Step 3: Create intelligent combinations
-        combinations = combination_engine.create_combinations(
-            outbound_flights=search_results['flights']['outbound'],
-            return_flights=search_results['flights']['return'],
-            hotels=search_results['accommodations']['hotels'],
-            airbnb_properties=search_results['accommodations']['airbnb'],
-            search_params=search_params
-        )
-        
-        # Step 4: Export results (if enabled)
-        if settings.export_csv:
-            await export_search_results(search_results, search_params)
-        
-        # Step 5: Render results
-        return templates.TemplateResponse("results.html", {
-            "request": request,
-            "combinations": combinations,
-            "outbound_flights": search_results['flights']['outbound'],
-            "return_flights": search_results['flights']['return'],
-            "hotels": search_results['accommodations']['hotels'],
-            "airbnb_properties": search_results['accommodations']['airbnb'],
-            "origin": f"{origin_info['city']} ({origin_info['iata']})",
-            "destination": f"{dest_info['city']} ({dest_info['iata']})",
-            "origin_iata": origin_info['iata'],
-            "dest_iata": dest_info['iata'],
-            "departure": search_params['departure'],
-            "return_date": search_params['return_date'],
-            "checkin": search_params['departure'],
-            "checkout": search_params['return_date'],
-            "nights": search_params['nights'],
-            "budget": search_params['budget'],
-            "persons": search_params['persons']
-        })
-        
-    except ValidationError as e:
-        logger.warning(f"Validation error: {e}")
-        return templates.TemplateResponse("error.html", {
-            "request": request,
-            "error": str(e)
-        })
-        
-    except ApiClientError as e:
-        logger.error(f"API error: {e}")
-        return templates.TemplateResponse("error.html", {
-            "request": request,
-            "error": "Search service temporarily unavailable. Please try again later."
-        })
-        
-    except Exception as e:
-        logger.error(f"Unexpected error in smart search: {e}")
-        return templates.TemplateResponse("error.html", {
-            "request": request,
-            "error": "An unexpected error occurred. Please try again."
-        })
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
 
-# Helper functions
 async def _validate_search_params(
     origin: str, 
     destination: str, 
@@ -324,7 +253,7 @@ async def _validate_search_params(
     return_date: str, 
     budget: Optional[str], 
     persons: int
-) -> dict:
+) -> Dict[str, Any]:
     """Validate and process search parameters"""
     
     # Validate persons
@@ -369,7 +298,7 @@ async def _validate_search_params(
         'nights': nights
     }
 
-async def _resolve_cities(origin: str, destination: str) -> tuple:
+async def _resolve_cities(origin: str, destination: str) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Resolve city names to IATA codes"""
     
     logger.info(f"Resolving cities: {origin} → {destination}")
@@ -396,12 +325,18 @@ async def _resolve_cities(origin: str, destination: str) -> tuple:
         {'iata': dest_iata, 'city': dest_city}
     )
 
-async def _perform_concurrent_search(origin_info: dict, dest_info: dict, search_params: dict) -> dict:
-    """Perform all searches concurrently"""
+async def _perform_all_searches(
+    origin_info: Dict[str, str], 
+    dest_info: Dict[str, str], 
+    search_params: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Perform all searches concurrently: flights, accommodations, and crowd tips
+    """
     
-    logger.info("Starting concurrent search for flights and accommodations")
+    logger.info("Starting concurrent search for flights, accommodations, and community tips")
     
-    # Create search tasks
+    # Create all search tasks
     flight_task = flight_service.search_round_trip(
         origin=origin_info['iata'],
         destination=dest_info['iata'],
@@ -411,7 +346,7 @@ async def _perform_concurrent_search(origin_info: dict, dest_info: dict, search_
     )
     
     accommodation_task = accommodation_service.search_all_accommodations(
-        city=search_params['destination'],  # ✅ Use original destination for hotels!
+        city=search_params['destination'],
         checkin=search_params['departure'],
         checkout=search_params['return_date'],
         guests=search_params['persons'],
@@ -419,15 +354,19 @@ async def _perform_concurrent_search(origin_info: dict, dest_info: dict, search_
         max_airbnb=settings.max_airbnb_per_search
     )
     
-    # Execute concurrently
+    # ✅ NEW: Community tips task
+    crowd_tips_task = crowd_service.get_travel_tips(dest_info['city'])
+    
+    # Execute all tasks concurrently
     try:
-        flights, accommodations = await asyncio.gather(
+        flights, accommodations, crowd_tips = await asyncio.gather(
             flight_task,
             accommodation_task,
+            crowd_tips_task,
             return_exceptions=True
         )
         
-        # Handle exceptions
+        # Handle exceptions for each service
         if isinstance(flights, Exception):
             logger.error(f"Flight search failed: {flights}")
             flights = {'outbound': [], 'return': []}
@@ -436,7 +375,11 @@ async def _perform_concurrent_search(origin_info: dict, dest_info: dict, search_
             logger.error(f"Accommodation search failed: {accommodations}")
             accommodations = {'hotels': [], 'airbnb': []}
         
-        # Validate we have some results
+        if isinstance(crowd_tips, Exception):
+            logger.error(f"Crowd tips search failed: {crowd_tips}")
+            crowd_tips = []
+        
+        # Validate core results (flights and accommodations)
         total_flights = len(flights['outbound']) + len(flights['return'])
         total_accommodations = len(accommodations['hotels']) + len(accommodations['airbnb'])
         
@@ -446,18 +389,115 @@ async def _perform_concurrent_search(origin_info: dict, dest_info: dict, search_
         if total_accommodations == 0:
             raise ValidationError(f"No accommodations found in {dest_info['city']} for selected dates")
         
-        logger.info(f"Search completed: {total_flights} flights, {total_accommodations} accommodations")
+        logger.info(f"Search completed: {total_flights} flights, {total_accommodations} accommodations, {len(crowd_tips)} community tips")
         
         return {
             'flights': flights,
-            'accommodations': accommodations
+            'accommodations': accommodations,
+            'crowd_tips': crowd_tips  # ✅ NEW: Include community tips
         }
         
     except Exception as e:
         logger.error(f"Concurrent search failed: {e}")
         raise
 
-# Test endpoints
+async def _fetch_city_suggestions(query: str) -> list:
+    """
+    Fetch city suggestions from OpenStreetMap Nominatim
+    Optimized and refactored for better maintainability
+    """
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        "q": query,
+        "format": "json",
+        "addressdetails": 1,
+        "limit": 8,
+        "accept-language": "de,en",
+        "featuretype": "city"
+    }
+    
+    headers = {
+        "User-Agent": "HolidayEngine/2.1 (travel-search-platform)"
+    }
+    
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.get(url, params=params, headers=headers)
+        
+        if response.status_code != 200:
+            logger.warning(f"Nominatim API error: {response.status_code}")
+            return []
+        
+        data = response.json()
+        
+        # Debug logging
+        logger.info(f"DEBUG: Raw Nominatim data for '{query}':")
+        for i, item in enumerate(data[:3]):
+            logger.info(f"  Result {i}: type='{item.get('type')}', class='{item.get('class')}', name='{item.get('name')}'")
+        
+        return _process_city_suggestions(data)
+
+def _process_city_suggestions(data: list) -> list:
+    """Process raw Nominatim data into clean city suggestions"""
+    suggestions = []
+    seen_cities = set()
+    
+    # Valid place types for cities
+    valid_types = [
+        "city", "town", "village", "municipality",
+        "administrative", "hamlet", "suburb", "quarter", "neighbourhood"
+    ]
+    valid_classes = ["place", "boundary"]
+    
+    for item in data:
+        place_type = item.get("type", "")
+        place_class = item.get("class", "")
+        
+        # Filter by valid types/classes
+        if place_type not in valid_types and place_class not in valid_classes:
+            continue
+        
+        # Extract city information
+        address = item.get("address", {})
+        city_name = (
+            address.get("city") or 
+            address.get("town") or 
+            address.get("village") or
+            address.get("municipality") or
+            address.get("hamlet") or
+            item.get("name", "")
+        )
+        
+        # Skip duplicates and empty names
+        if not city_name or city_name.lower() in seen_cities:
+            continue
+        
+        seen_cities.add(city_name.lower())
+        
+        # Build suggestion
+        country = address.get("country", "")
+        country_code = address.get("country_code", "").upper()
+        
+        suggestion = {
+            "city": city_name,
+            "country": country,
+            "country_code": country_code,
+            "display_name": f"{city_name}, {country}" if country else city_name,
+            "lat": float(item.get("lat", 0)),
+            "lon": float(item.get("lon", 0)),
+            "importance": item.get("importance", 0),
+            "type": place_type
+        }
+        
+        suggestions.append(suggestion)
+    
+    # Sort by importance and return top results
+    suggestions.sort(key=lambda x: x["importance"], reverse=True)
+    return suggestions[:6]
+
+# =============================================================================
+# TEST ENDPOINTS
+# =============================================================================
+
 @app.post("/test-flights")
 async def test_flights(
     origin: str = Form("VIE"),
@@ -496,16 +536,39 @@ async def test_hotels(
         logger.error(f"Hotel test failed: {e}")
         return {"success": False, "error": str(e)}
 
-# Custom exceptions
+@app.post("/test-crowd-tips")  # ✅ NEW: Test endpoint for crowd tips
+async def test_crowd_tips(
+    destination: str = Form("Barcelona")
+):
+    """Test crowd-sourced tips endpoint"""
+    try:
+        tips = await crowd_service.get_travel_tips(destination)
+        return {
+            "success": True,
+            "query": {"destination": destination},
+            "results": tips,
+            "count": len(tips)
+        }
+    except Exception as e:
+        logger.error(f"Crowd tips test failed: {e}")
+        return {"success": False, "error": str(e)}
+
+# =============================================================================
+# EXCEPTION CLASSES
+# =============================================================================
+
 class ValidationError(Exception):
     """Custom exception for validation errors"""
     pass
 
-# Startup event
+# =============================================================================
+# STARTUP/SHUTDOWN EVENTS
+# =============================================================================
+
 @app.on_event("startup")
 async def startup_event():
     """Application startup tasks"""
-    logger.info("Starting Holiday Engine v2.0")
+    logger.info("Starting Holiday Engine v2.1 with Community Tips")
     logger.info(f"Debug mode: {settings.debug}")
     logger.info(f"API token configured: {'Yes' if settings.apify_token else 'No'}")
     
@@ -515,13 +578,31 @@ async def startup_event():
         logger.info(f"API health check: {health['status']}")
     except Exception as e:
         logger.warning(f"API health check failed: {e}")
+    
+    # Test crowd service
+    try:
+        test_tips = await crowd_service.get_travel_tips("Barcelona")
+        logger.info(f"Crowd service test: {len(test_tips)} tips loaded")
+    except Exception as e:
+        logger.warning(f"Crowd service test failed: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown tasks"""
+    logger.info("Shutting down Holiday Engine v2.1")
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
 
 if __name__ == "__main__":
     import uvicorn
     
-    logger.info("🚀 Starting Holiday Engine v2.0...")
+    logger.info("🚀 Starting Holiday Engine v2.1 with Community Tips...")
     logger.info(f"🌐 Open: http://{settings.host}:{settings.port}")
     logger.info(f"🔧 Health: http://{settings.host}:{settings.port}/health")
+    logger.info(f"📚 API Docs: http://{settings.host}:{settings.port}/docs")
+    logger.info(f"🌍 Community Tips: Integrated!")
     
     uvicorn.run(
         app, 
